@@ -60,6 +60,21 @@ export default function LoginPage() {
         return;
       }
 
+      if (profile.status === 'approved') {
+        const { error: activityError } = await supabase.rpc('log_employee_session_activity', {
+          target_action: 'login',
+        });
+        if (activityError) console.warn(`[Activity] Unable to record login: ${activityError.message}`);
+      }
+
+      if (profile.role === 'cashier' && profile.status !== 'approved') {
+        const { error: signOutError } = await supabase.auth.signOut();
+        if (signOutError) {
+          toast.error(`This employee account is inactive and could not be signed out: ${signOutError.message}`);
+          return;
+        }
+      }
+
       if (profile.status === 'pending') {
         router.push('/pending-approval');
       } else if (profile.status === 'rejected') {
@@ -77,6 +92,25 @@ export default function LoginPage() {
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Unable to sign in.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    if (!email.trim()) {
+      toast.error('Enter your email address first.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: `${window.location.origin}/auth/callback?flow=recovery`,
+      });
+      if (error) throw error;
+      toast.success('If an account exists for that email, a secure reset link has been sent.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to send a password reset email.');
     } finally {
       setLoading(false);
     }
@@ -162,7 +196,7 @@ export default function LoginPage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label htmlFor="password">Password</Label>
-                <button type="button" className="text-xs text-primary hover:underline">
+                <button type="button" className="text-xs text-primary hover:underline" onClick={() => void handlePasswordReset()} disabled={loading}>
                   Forgot password?
                 </button>
               </div>

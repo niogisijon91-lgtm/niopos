@@ -48,11 +48,11 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { supabase } from '@/lib/supabase';
 import { escapeCsvCell, escapeHtml } from '@/lib/safe-export';
-import { useAuth } from '@/components/providers';
 import { useTranslation } from '@/hooks/use-translation';
 import { toast } from 'sonner';
 import type { Product, StockReconciliation } from '@/types';
 import { useConfirmation } from '@/hooks/use-confirmation';
+import AdjustmentManager from './adjustment-manager';
 
 type ReconciliationStatus = 'NOT_CHECKED' | 'CHECKED' | 'DIFFERENCE_FOUND';
 
@@ -81,10 +81,10 @@ const REASON_OPTIONS = [
 
 export default function StockReconciliationPage() {
   const { t } = useTranslation();
-  const { user } = useAuth();
   const { confirmAction, dialog: confirmationDialog } = useConfirmation();
 
   const [products, setProducts] = useState<ProductWithRecon[]>([]);
+  const [permissions, setPermissions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -129,22 +129,24 @@ export default function StockReconciliationPage() {
     if (showInitialLoading) setLoading(true);
 
     try {
-      const [prodRes, catRes] = await Promise.all([
+      const [prodRes, catRes, permissionRes] = await Promise.all([
         supabase
           .from('products')
           .select('*, brands(name), categories(name)')
           .eq('is_deleted', false)
           .order('name'),
         supabase.from('categories').select('id, name').order('name'),
+        supabase.rpc('get_my_permissions'),
       ]);
 
-      if (prodRes.error || catRes.error) throw new Error('Unable to load inventory data');
+      if (prodRes.error || catRes.error || permissionRes.error) throw new Error('Unable to load inventory data');
 
       const baseProducts: ProductWithRecon[] = (prodRes.data || []).map((product) => ({
         ...product,
         latest_reconciliation: null,
       }));
       setProducts(baseProducts);
+      setPermissions(permissionRes.data || []);
       setCategories(catRes.data || []);
       if (showInitialLoading) setLoading(false);
 
@@ -179,6 +181,27 @@ export default function StockReconciliationPage() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    let active = true;
+    const refreshPermissions = async () => {
+      const { data, error } = await supabase.rpc('get_my_permissions');
+      if (error) {
+        console.error('[Stock reconciliation] Failed to refresh permissions:', error);
+        return;
+      }
+      if (active) setPermissions(data || []);
+    };
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshPermissions();
+    }, 15000);
+    window.addEventListener('focus', refreshPermissions);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshPermissions);
+    };
+  }, []);
 
   // Determine status for a product
   const getReconStatus = (product: ProductWithRecon): ReconciliationStatus => {
@@ -294,6 +317,10 @@ export default function StockReconciliationPage() {
   }, [products]);
 
   const progressPercent = stats.total > 0 ? Math.round(((stats.checked + stats.diffFound) / stats.total) * 100) : 0;
+  const canVerify = permissions.includes('*') || permissions.includes('stock_reconciliation.create');
+  const canApplyAdjustment = permissions.includes('*') || permissions.includes('stock_reconciliation.edit');
+  const canExport = permissions.includes('*') || permissions.includes('stock_reconciliation.export');
+  const canPrint = permissions.includes('*') || permissions.includes('stock_reconciliation.print');
 
   // Verify stock
   const handleOpenVerify = (product: ProductWithRecon) => {
@@ -304,6 +331,10 @@ export default function StockReconciliationPage() {
   };
 
   const handleSaveVerify = async () => {
+    if (!canVerify) {
+      toast.error(t('stockAdjustments.noPermission'));
+      return;
+    }
     if (!verifyProduct) return;
     const physical = Number(physicalQty);
     if (
@@ -327,18 +358,23 @@ export default function StockReconciliationPage() {
 
     setSaving(true);
     try {
-      const reasonValue = reason && reason !== 'other' ? t(`reconciliation.${reason}`) : reason === 'other' ? 'Other' : null;
-
-      const { error } = await supabase.from('stock_reconciliations').insert({
-        product_id: verifyProduct.id,
-        system_quantity: systemQty,
-        physical_quantity: physical,
-        difference: diff,
-        status,
-        reason: reasonValue,
-        reason_details: reason === 'other' ? reasonDetails : null,
-        checked_by: (typeof user?.user_metadata?.full_name === 'string' && user.user_metadata.full_name) || user?.email || 'Unknown',
-        checked_at: new Date().toISOString(),
+      const reconciliationReasons: Record<string, string> = {
+        damagedProduct: 'damaged_products',
+        lostProduct: 'lost_missing_products',
+        wrongSalesEntry: 'physical_stock_correction',
+        wrongPurchaseEntry: 'physical_stock_correction',
+        expiredProduct: 'expired_products',
+        theft: 'lost_missing_products',
+        countingError: 'physical_stock_correction',
+        other: 'other',
+      };
+      const { error } = await supabase.rpc('record_stock_reconciliations', {
+        p_items: [{
+          product_id: verifyProduct.id,
+          physical_quantity: physical,
+          reason: diff === 0 ? null : reconciliationReasons[reason],
+          reason_details: reason === 'other' ? reasonDetails.trim() : null,
+        }],
       });
 
       if (error) throw error;
@@ -380,6 +416,10 @@ export default function StockReconciliationPage() {
 
   // Bulk verify
   const handleBulkVerify = async () => {
+    if (!canVerify) {
+      toast.error(t('stockAdjustments.noPermission'));
+      return;
+    }
     const selectedProducts = products.filter((p) => selectedIds.has(p.id));
     if (selectedProducts.length === 0) return;
 
@@ -388,7 +428,7 @@ export default function StockReconciliationPage() {
     let errorCount = 0;
 
     try {
-      const inserts: any[] = [];
+      const items: { product_id: string; physical_quantity: number; reason: string }[] = [];
       for (const p of selectedProducts) {
         const qtyStr = bulkQuantities[p.id];
         if (!qtyStr) continue;
@@ -402,25 +442,17 @@ export default function StockReconciliationPage() {
           return;
         }
 
-        const systemQty = Number(p.stock);
-        const diff = physical - systemQty;
-        const status: ReconciliationStatus = diff === 0 ? 'CHECKED' : 'DIFFERENCE_FOUND';
-
-        inserts.push({
+        items.push({
           product_id: p.id,
-          system_quantity: systemQty,
           physical_quantity: physical,
-          difference: diff,
-          status,
-          checked_by: (typeof user?.user_metadata?.full_name === 'string' && user.user_metadata.full_name) || user?.email || 'Unknown',
-          checked_at: new Date().toISOString(),
+          reason: 'physical_stock_correction',
         });
       }
 
-      if (inserts.length > 0) {
-        const { error } = await supabase.from('stock_reconciliations').insert(inserts);
+      if (items.length > 0) {
+        const { error } = await supabase.rpc('record_stock_reconciliations', { p_items: items });
         if (error) throw error;
-        successCount = inserts.length;
+        successCount = items.length;
       }
 
       toast.success(`${successCount} ${t('reconciliation.verified')}`);
@@ -454,6 +486,10 @@ export default function StockReconciliationPage() {
 
   // Stock adjustment
   const handleApplyAdjustment = async () => {
+    if (!canApplyAdjustment) {
+      toast.error(t('stockAdjustments.noPermission'));
+      return;
+    }
     if (!adjustmentProduct || !adjustmentProduct.latest_reconciliation) return;
     const recon = adjustmentProduct.latest_reconciliation;
     const currentStock = Number(adjustmentProduct.stock);
@@ -474,18 +510,12 @@ export default function StockReconciliationPage() {
       action: async () => {
         setAdjustmentSaving(true);
         try {
-          const adjustedBy =
-            (typeof user?.user_metadata?.full_name === 'string' &&
-              user.user_metadata.full_name) ||
-            user?.email ||
-            'Unknown';
-
           const { error } = await supabase.rpc(
             'apply_stock_reconciliation_adjustment',
             {
               p_reconciliation_id: recon.id,
               p_expected_current_stock: currentStock,
-              p_adjusted_by: adjustedBy,
+              p_adjusted_by: '',
             }
           );
           if (error) throw error;
@@ -501,6 +531,7 @@ export default function StockReconciliationPage() {
 
   // Export CSV
   const handleExportCSV = () => {
+    if (!canExport) return;
     const headers = [
       t('products.productName'),
       t('reconciliation.productCode'),
@@ -543,6 +574,7 @@ export default function StockReconciliationPage() {
 
   // Print
   const handlePrint = () => {
+    if (!canPrint) return;
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
     const rows = filteredProducts
@@ -601,15 +633,21 @@ export default function StockReconciliationPage() {
           <p className="text-sm text-muted-foreground mt-1">{t('reconciliation.subtitle')}</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Button variant="outline" size="sm" onClick={() => setScanMode(true)}>
-            <ScanLine className="w-4 h-4 mr-2" /> {t('reconciliation.scanBarcode')}
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleExportCSV}>
-            <Download className="w-4 h-4 mr-2" /> {t('common.export')} CSV
-          </Button>
-          <Button variant="outline" size="sm" onClick={handlePrint}>
-            <Printer className="w-4 h-4 mr-2" /> {t('reconciliation.printReport')}
-          </Button>
+          {canVerify && (
+            <Button variant="outline" size="sm" onClick={() => setScanMode(true)}>
+              <ScanLine className="w-4 h-4 mr-2" /> {t('reconciliation.scanBarcode')}
+            </Button>
+          )}
+          {canExport && (
+            <Button variant="outline" size="sm" onClick={handleExportCSV}>
+              <Download className="w-4 h-4 mr-2" /> {t('common.export')} CSV
+            </Button>
+          )}
+          {canPrint && (
+            <Button variant="outline" size="sm" onClick={handlePrint}>
+              <Printer className="w-4 h-4 mr-2" /> {t('reconciliation.printReport')}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -654,6 +692,8 @@ export default function StockReconciliationPage() {
           </div>
         </Card>
       )}
+
+      <AdjustmentManager onAdjusted={loadData} />
 
       {/* Filters */}
       <Card className="p-4 space-y-4">
@@ -708,7 +748,7 @@ export default function StockReconciliationPage() {
 
         {/* Bulk Actions */}
         <div className="flex items-center gap-2 flex-wrap">
-          {bulkMode ? (
+          {bulkMode && canVerify ? (
             <>
               <Button size="sm" onClick={handleBulkVerify} disabled={bulkSaving || selectedIds.size === 0}>
                 {bulkSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
@@ -719,7 +759,7 @@ export default function StockReconciliationPage() {
               </Button>
             </>
           ) : (
-            <Button size="sm" variant="outline" onClick={() => setBulkMode(true)}>
+            canVerify && <Button size="sm" variant="outline" onClick={() => setBulkMode(true)}>
               <ClipboardCheck className="w-4 h-4 mr-2" /> {t('reconciliation.bulkVerifyTitle')}
             </Button>
           )}
@@ -823,13 +863,15 @@ export default function StockReconciliationPage() {
                       <TableCell><StatusBadge status={status} /></TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
-                          <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => handleOpenVerify(product)} title={t('reconciliation.verifyStock')}>
-                            <ClipboardCheck className="w-4 h-4" />
-                          </Button>
+                          {canVerify && (
+                            <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => handleOpenVerify(product)} title={t('reconciliation.verifyStock')}>
+                              <ClipboardCheck className="w-4 h-4" />
+                            </Button>
+                          )}
                           <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => handleOpenHistory(product)} title={t('reconciliation.history')}>
                             <History className="w-4 h-4" />
                           </Button>
-                          {status === 'DIFFERENCE_FOUND' && !recon?.adjustment_applied && (
+                          {canApplyAdjustment && status === 'DIFFERENCE_FOUND' && !recon?.adjustment_applied && (
                             <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-amber-600" onClick={() => setAdjustmentProduct(product)} title={t('reconciliation.applyAdjustment')}>
                               <AlertTriangle className="w-4 h-4" />
                             </Button>

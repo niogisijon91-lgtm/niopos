@@ -18,9 +18,15 @@ export default function AuthCallbackPage() {
 
     const completeAuthentication = async () => {
       const callbackUrl = new URL(window.location.href);
+      const callbackHash = new URLSearchParams(callbackUrl.hash.slice(1));
       const providerError =
         callbackUrl.searchParams.get('error_description') ||
-        callbackUrl.searchParams.get('error');
+        callbackUrl.searchParams.get('error') ||
+        callbackHash.get('error_description') ||
+        callbackHash.get('error');
+      const isRecoveryFlow = callbackUrl.searchParams.get('flow') === 'recovery'
+        || callbackUrl.searchParams.get('type') === 'recovery'
+        || callbackHash.get('type') === 'recovery';
 
       if (providerError) {
         setErrorMessage(providerError);
@@ -38,6 +44,10 @@ export default function AuthCallbackPage() {
           setErrorMessage('No active authentication session was found. Please sign in and try again.');
           return;
         }
+        if (isRecoveryFlow) {
+          router.replace('/reset-password');
+          return;
+        }
         router.replace('/login');
         return;
       }
@@ -45,6 +55,11 @@ export default function AuthCallbackPage() {
       const { error } = await supabase.auth.exchangeCodeForSession(code);
       if (error) {
         setErrorMessage(error.message);
+        return;
+      }
+
+      if (isRecoveryFlow) {
+        router.replace('/reset-password');
         return;
       }
 

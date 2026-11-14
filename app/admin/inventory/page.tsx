@@ -81,7 +81,9 @@ export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
+  const [inventoryStockValue, setInventoryStockValue] = useState<number | null>(null);
   const [currencySymbol, setCurrencySymbol] = useState('৳');
+  const [permissions, setPermissions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'overview' | 'movements'>('overview');
   const [search, setSearch] = useState('');
@@ -105,20 +107,43 @@ export default function InventoryPage() {
   const [historyLoading, setHistoryLoading] = useState(false);
 
   const loadData = useCallback(async () => {
-    const [productResult, categoryResult, movementResult, settingsResult] = await Promise.all([
-      supabase
-        .from('products')
-        .select('*, brands(name), categories(name)')
+    const permissionsResult = await supabase.rpc('get_my_permissions');
+    if (permissionsResult.error) {
+      console.error('[Inventory] Failed to load permissions:', permissionsResult.error);
+      toast.error(`${t('dashboard.metricsLoadFailed')}: permissions`);
+      setLoading(false);
+      return;
+    }
+    const permissionKeys = permissionsResult.data || [];
+    const canReadPurchasePrice = permissionKeys.includes('*') || permissionKeys.includes('actions.view_purchase_price');
+    const canReadStockValue = permissionKeys.includes('*') || permissionKeys.includes('actions.view_stock_value');
+    const productFields = [
+      'id', 'name', 'sku', 'barcode', 'brand_id', 'category_id', 'unit', 'stock',
+      'min_stock', 'status', 'selling_price',
+    ];
+    if (canReadPurchasePrice) productFields.push('cost_price');
+    const movementFields = [
+      'id', 'product_id', 'type', 'quantity', 'reference', 'note', 'created_at',
+      'store_id', 'previous_stock', 'new_stock', 'reason', 'performed_by',
+    ];
+    if (canReadPurchasePrice) movementFields.push('purchase_price');
+
+    const [productResult, categoryResult, movementResult, settingsResult, totalsResult] = await Promise.all([
+      supabase.from('products')
+        .select(`${productFields.join(',')}, brands(name), categories(name)`)
         .eq('is_deleted', false)
         .eq('status', 'active')
-        .order('name'),
+        .order('name')
+        .returns<Product[]>(),
       supabase.from('categories').select('*').eq('status', 'active').order('name'),
       supabase
         .from('stock_movements')
-        .select('*, products(id, name)')
+        .select(`${movementFields.join(',')}, products(id, name)`)
         .order('created_at', { ascending: false })
-        .limit(30),
+        .limit(30)
+        .returns<(StockMovement & { products: { id: string; name: string }[] | null })[]>(),
       supabase.from('settings').select('currency, currency_symbol').maybeSingle(),
+      supabase.rpc('get_dashboard_inventory_totals'),
     ]);
 
     const failedResult = [
@@ -126,6 +151,7 @@ export default function InventoryPage() {
       ['categories', categoryResult.error],
       ['stock movements', movementResult.error],
       ['store settings', settingsResult.error],
+      ['inventory totals', totalsResult.error],
     ].find((entry) => entry[1]);
     if (failedResult) {
       console.error(`[Inventory] Failed to load ${failedResult[0]}:`, failedResult[1]);
@@ -134,7 +160,16 @@ export default function InventoryPage() {
       return;
     }
 
-    setProducts((productResult.data || []) as Product[]);
+    setProducts((productResult.data || []).map((product) => ({
+      ...product,
+      cost_price: 'cost_price' in product ? product.cost_price : 0,
+    })) as Product[]);
+    setPermissions(permissionKeys);
+    setInventoryStockValue(
+      canReadStockValue && totalsResult.data?.[0]?.stock_value != null
+        ? Number(totalsResult.data[0].stock_value)
+        : null
+    );
     setCategories((categoryResult.data || []) as Category[]);
     setMovements((movementResult.data || []).map(({ products: relatedProducts, ...movement }) => ({
       ...movement,
@@ -177,12 +212,20 @@ export default function InventoryPage() {
     let active = true;
     setHistoryLoading(true);
     const from = historyPage * HISTORY_PAGE_SIZE;
+    const historyFields = [
+      'id', 'product_id', 'type', 'quantity', 'reference', 'note', 'created_at',
+      'store_id', 'previous_stock', 'new_stock', 'reason', 'performed_by',
+    ];
+    if (permissions.includes('*') || permissions.includes('actions.view_purchase_price')) {
+      historyFields.push('purchase_price');
+    }
     void supabase
       .from('stock_movements')
-      .select('*, products(id, name)', { count: 'exact' })
+      .select(`${historyFields.join(',')}, products(id, name)`, { count: 'exact' })
       .eq('product_id', historyProduct.id)
       .order('created_at', { ascending: false })
       .range(from, from + HISTORY_PAGE_SIZE - 1)
+      .returns<(StockMovement & { products: { id: string; name: string }[] | null })[]>()
       .then(({ data, error, count }) => {
         if (!active) return;
         if (error) {
@@ -198,7 +241,7 @@ export default function InventoryPage() {
         setHistoryLoading(false);
       });
     return () => { active = false; };
-  }, [historyProduct, historyPage, t]);
+  }, [historyProduct, historyPage, permissions, t]);
 
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -222,8 +265,13 @@ export default function InventoryPage() {
   const paginatedProducts = filteredProducts.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
   const lowStock = products.filter((product) => Number(product.min_stock) > 0 && Number(product.stock) > 0 && Number(product.stock) <= Number(product.min_stock));
   const outOfStock = products.filter((product) => Number(product.stock) <= 0);
-  const totalValue = products.reduce((sum, product) => sum + Number(product.cost_price || 0) * Number(product.stock || 0), 0);
   const totalStock = products.reduce((sum, product) => sum + Number(product.stock || 0), 0);
+  const canViewStockValue = permissions.includes('*') || permissions.includes('actions.view_stock_value');
+  const canViewPurchasePrice = permissions.includes('*') || permissions.includes('actions.view_purchase_price');
+  const canIncreaseStock = permissions.includes('*') || permissions.includes('actions.adjust_stock_increase');
+  const canDecreaseStock = permissions.includes('*') || permissions.includes('actions.adjust_stock_decrease');
+  const canViewProductValue = canViewStockValue && canViewPurchasePrice;
+  const overviewColumnCount = 6 + Number(canViewPurchasePrice) + Number(canViewProductValue);
   const numberLocale = locale === 'bn' ? 'bn-BD' : 'en-US';
   const formatMoney = (value: number) => `${currencySymbol}${value.toLocaleString(numberLocale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const formatDate = (value: string) => new Date(value).toLocaleString(numberLocale);
@@ -297,19 +345,23 @@ export default function InventoryPage() {
           <p className="text-sm text-muted-foreground">{t('inventory.subtitle')}</p>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => openAdjustment('in')}>
-            <ArrowDownToLine className="mr-2 h-4 w-4" />{t('inventory.stockIn')}
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => openAdjustment('out')}>
-            <ArrowUpFromLine className="mr-2 h-4 w-4" />{t('inventory.stockOut')}
-          </Button>
+          {canIncreaseStock && (
+            <Button size="sm" variant="outline" onClick={() => openAdjustment('in')}>
+              <ArrowDownToLine className="mr-2 h-4 w-4" />{t('inventory.stockIn')}
+            </Button>
+          )}
+          {canDecreaseStock && (
+            <Button size="sm" variant="outline" onClick={() => openAdjustment('out')}>
+              <ArrowUpFromLine className="mr-2 h-4 w-4" />{t('inventory.stockOut')}
+            </Button>
+          )}
         </div>
       </div>
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         {[
           { label: t('products.totalProducts'), value: products.length.toLocaleString(numberLocale), icon: Boxes, color: 'from-slate-800 to-black' },
-          { label: t('inventory.totalStockValue'), value: formatMoney(totalValue), icon: PackageCheck, color: 'from-blue-500 to-cyan-600' },
+          ...(canViewStockValue ? [{ label: t('inventory.totalStockValue'), value: inventoryStockValue === null ? '—' : formatMoney(inventoryStockValue), icon: PackageCheck, color: 'from-blue-500 to-cyan-600' }] : []),
           { label: t('inventory.lowStock'), value: lowStock.length.toLocaleString(numberLocale), icon: PackageCheck, color: 'from-amber-500 to-orange-600' },
           { label: t('inventory.outOfStock'), value: outOfStock.length.toLocaleString(numberLocale), icon: PackageX, color: 'from-rose-500 to-pink-600' },
         ].map((stat, index) => (
@@ -364,9 +416,8 @@ export default function InventoryPage() {
                   <TableHead>{t('inventory.skuBarcode')}</TableHead>
                   <TableHead>{t('inventory.category')}</TableHead>
                   <TableHead>{t('inventory.currentStock')}</TableHead>
-                  <TableHead>{t('products.purchasePrice')}</TableHead>
-                  <TableHead>{t('inventory.sellingPrice')}</TableHead>
-                  <TableHead>{t('inventory.value')}</TableHead>
+                  {canViewPurchasePrice && <TableHead>{t('products.purchasePrice')}</TableHead>}
+                  {canViewProductValue && <TableHead>{t('inventory.value')}</TableHead>}
                   <TableHead>{t('inventory.stockStatus')}</TableHead>
                   <TableHead className="text-right">{t('common.actions')}</TableHead>
                 </TableRow>
@@ -374,10 +425,10 @@ export default function InventoryPage() {
               <TableBody>
                 {loading ? (
                   Array.from({ length: 5 }).map((_, row) => (
-                    <TableRow key={row}>{Array.from({ length: 9 }).map((__, cell) => <TableCell key={cell}><div className="h-4 animate-pulse rounded bg-muted" /></TableCell>)}</TableRow>
+                    <TableRow key={row}>{Array.from({ length: overviewColumnCount }).map((__, cell) => <TableCell key={cell}><div className="h-4 animate-pulse rounded bg-muted" /></TableCell>)}</TableRow>
                   ))
                 ) : paginatedProducts.length === 0 ? (
-                  <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">{t('inventory.noProductsFound')}</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={overviewColumnCount} className="py-10 text-center text-muted-foreground">{t('inventory.noProductsFound')}</TableCell></TableRow>
                 ) : paginatedProducts.map((product) => {
                   const status = getStockStatus(product, t);
                   return (
@@ -386,18 +437,17 @@ export default function InventoryPage() {
                       <TableCell className="text-sm text-muted-foreground">{product.sku || product.barcode || '-'}</TableCell>
                       <TableCell>{product.categories?.name || '-'}</TableCell>
                       <TableCell>{Number(product.stock)} {product.unit}</TableCell>
-                      <TableCell>{formatMoney(Number(product.cost_price || 0))}</TableCell>
-                      <TableCell>{formatMoney(Number(product.selling_price || 0))}</TableCell>
-                      <TableCell className="font-medium">{formatMoney(Number(product.stock || 0) * Number(product.cost_price || 0))}</TableCell>
+                      {canViewPurchasePrice && <TableCell>{formatMoney(Number(product.cost_price || 0))}</TableCell>}
+                      {canViewProductValue && <TableCell className="font-medium">{formatMoney(Number(product.stock || 0) * Number(product.cost_price || 0))}</TableCell>}
                       <TableCell><Badge className={status.className}>{status.label}</Badge></TableCell>
                       <TableCell>
                         <div className="flex justify-end gap-1">
-                          <Button size="sm" variant="outline" onClick={() => openAdjustment('in', product)} title={t('inventory.stockIn')}>
+                          {canIncreaseStock && <Button size="sm" variant="outline" onClick={() => openAdjustment('in', product)} title={t('inventory.stockIn')}>
                             <ArrowDownToLine className="mr-1 h-3.5 w-3.5" />+
-                          </Button>
-                          <Button size="sm" variant="outline" onClick={() => openAdjustment('out', product)} title={t('inventory.stockOut')}>
+                          </Button>}
+                          {canDecreaseStock && <Button size="sm" variant="outline" onClick={() => openAdjustment('out', product)} title={t('inventory.stockOut')}>
                             <ArrowUpFromLine className="mr-1 h-3.5 w-3.5" />-
-                          </Button>
+                          </Button>}
                           <Button size="icon" variant="ghost" onClick={() => openHistory(product)} title={t('inventory.stockHistory')}>
                             <History className="h-4 w-4" />
                           </Button>
@@ -427,7 +477,7 @@ export default function InventoryPage() {
             <History className="h-4 w-4 text-muted-foreground" />
             <h3 className="text-sm font-semibold">{t('inventory.recentMovements')}</h3>
           </div>
-          <MovementTable movements={movements} locale={numberLocale} formatMoney={formatMoney} t={t} />
+          <MovementTable movements={movements} locale={numberLocale} formatMoney={formatMoney} canViewPurchasePrice={canViewPurchasePrice} t={t} />
           {movements.length === 0 && !loading && <div className="py-12 text-center text-muted-foreground">{t('inventory.noMovements')}</div>}
         </Card>
       )}
@@ -450,10 +500,10 @@ export default function InventoryPage() {
               <Label>{t(adjustmentDirection === 'in' ? 'inventory.quantityToAdd' : 'inventory.quantityToRemove')}</Label>
               <Input type="number" min="0" step={unitAllowsDecimalQuantity(selectedProduct?.unit) ? 'any' : '1'} value={adjustmentQuantity} onChange={(event) => setAdjustmentQuantity(event.target.value)} />
             </div>
-            {adjustmentDirection === 'in' && (
+            {adjustmentDirection === 'in' && canViewPurchasePrice && (
               <div className="space-y-2">
                 <Label>{t('inventory.purchasePriceOptional')}</Label>
-                <Input type="number" min="0" step="0.01" value={adjustmentPurchasePrice} onChange={(event) => setAdjustmentPurchasePrice(event.target.value)} placeholder={selectedProduct ? String(selectedProduct.cost_price || 0) : ''} />
+                <Input type="number" min="0" step="0.01" value={adjustmentPurchasePrice} onChange={(event) => setAdjustmentPurchasePrice(event.target.value)} placeholder={selectedProduct && canViewPurchasePrice ? String(selectedProduct.cost_price || 0) : ''} disabled={!canViewPurchasePrice} />
               </div>
             )}
             <div className="space-y-2">
@@ -486,7 +536,7 @@ export default function InventoryPage() {
           ) : historyRows.length === 0 ? (
             <div className="py-12 text-center text-muted-foreground">{t('inventory.noMovements')}</div>
           ) : (
-            <MovementTable movements={historyRows} locale={numberLocale} formatMoney={formatMoney} t={t} />
+            <MovementTable movements={historyRows} locale={numberLocale} formatMoney={formatMoney} canViewPurchasePrice={canViewPurchasePrice} t={t} />
           )}
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" disabled={historyPage === 0 || historyLoading} onClick={() => setHistoryPage((current) => current - 1)}>{t('inventory.previous')}</Button>
@@ -504,9 +554,9 @@ export default function InventoryPage() {
               <div><p className="text-muted-foreground">{t('inventory.skuBarcode')}</p><p>{viewProduct.sku || viewProduct.barcode || '-'}</p></div>
               <div><p className="text-muted-foreground">{t('inventory.category')}</p><p>{viewProduct.categories?.name || '-'}</p></div>
               <div><p className="text-muted-foreground">{t('inventory.currentStock')}</p><p>{Number(viewProduct.stock)} {viewProduct.unit}</p></div>
-              <div><p className="text-muted-foreground">{t('products.purchasePrice')}</p><p>{formatMoney(Number(viewProduct.cost_price || 0))}</p></div>
+              {canViewPurchasePrice && <div><p className="text-muted-foreground">{t('products.purchasePrice')}</p><p>{formatMoney(Number(viewProduct.cost_price || 0))}</p></div>}
               <div><p className="text-muted-foreground">{t('inventory.sellingPrice')}</p><p>{formatMoney(Number(viewProduct.selling_price || 0))}</p></div>
-              <div><p className="text-muted-foreground">{t('inventory.value')}</p><p>{formatMoney(Number(viewProduct.stock || 0) * Number(viewProduct.cost_price || 0))}</p></div>
+              {canViewProductValue && <div><p className="text-muted-foreground">{t('inventory.value')}</p><p>{formatMoney(Number(viewProduct.stock || 0) * Number(viewProduct.cost_price || 0))}</p></div>}
             </div>
           )}
         </DialogContent>
@@ -519,11 +569,13 @@ function MovementTable({
   movements,
   locale,
   formatMoney,
+  canViewPurchasePrice,
   t,
 }: {
   movements: StockMovement[];
   locale: string;
   formatMoney: (value: number) => string;
+  canViewPurchasePrice: boolean;
   t: (key: string) => string;
 }) {
   return (
@@ -537,7 +589,7 @@ function MovementTable({
             <TableHead>{t('common.quantity')}</TableHead>
             <TableHead>{t('inventory.newStock')}</TableHead>
             <TableHead>{t('inventory.reason')}</TableHead>
-            <TableHead>{t('products.purchasePrice')}</TableHead>
+            {canViewPurchasePrice && <TableHead>{t('products.purchasePrice')}</TableHead>}
             <TableHead>{t('inventory.performedBy')}</TableHead>
             <TableHead>{t('common.date')}</TableHead>
             <TableHead>{t('inventory.notes')}</TableHead>
@@ -559,7 +611,7 @@ function MovementTable({
                 <TableCell>{Number(movement.quantity)}</TableCell>
                 <TableCell>{movement.new_stock == null ? '-' : Number(movement.new_stock)}</TableCell>
                 <TableCell>{movement.reason || movement.reference || '-'}</TableCell>
-                <TableCell>{movement.purchase_price == null ? '-' : formatMoney(Number(movement.purchase_price))}</TableCell>
+                {canViewPurchasePrice && <TableCell>{movement.purchase_price == null ? '-' : formatMoney(Number(movement.purchase_price))}</TableCell>}
                 <TableCell className="font-mono text-xs">{movement.performed_by ? movement.performed_by.slice(0, 8) : '-'}</TableCell>
                 <TableCell className="whitespace-nowrap">{new Date(movement.created_at).toLocaleString(locale)}</TableCell>
                 <TableCell className="max-w-48 truncate">{movement.note || '-'}</TableCell>

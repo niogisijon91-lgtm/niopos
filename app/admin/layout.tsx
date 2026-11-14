@@ -44,12 +44,14 @@ import { toast } from 'sonner';
 const routePermission = (pathname: string): string | null => {
   const routes: [string, string][] = [
     ['/admin/pos', 'pos'],
+    ['/admin/sales/return', 'sale_returns'],
+    ['/admin/sales/returns', 'sale_returns'],
     ['/admin/products', 'products'],
     ['/admin/categories', 'products'],
     ['/admin/brands', 'products'],
     ['/admin/discount-offers', 'products'],
     ['/admin/inventory', 'inventory'],
-    ['/admin/stock-reconciliation', 'inventory'],
+    ['/admin/stock-reconciliation', 'stock_reconciliation'],
     ['/admin/barcode', 'inventory'],
     ['/admin/units', 'inventory'],
     ['/admin/purchases', 'purchases'],
@@ -57,7 +59,7 @@ const routePermission = (pathname: string): string | null => {
     ['/admin/customers', 'customers'],
     ['/admin/sales', 'sales'],
     ['/admin/reports', 'reports'],
-    ['/admin/dashboard', 'reports'],
+    ['/admin/dashboard', 'dashboard'],
     ['/admin/employees', 'employees'],
     ['/admin/expenses', 'expenses'],
     ['/admin/settings', 'settings'],
@@ -86,6 +88,7 @@ export default function AdminLayout({
   const { t, locale, setLocale } = useTranslation();
   const [permissions, setPermissions] = useState<string[] | null>(null);
   const [permissionsError, setPermissionsError] = useState<string | null>(null);
+  const [assignedRoleName, setAssignedRoleName] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -96,6 +99,7 @@ export default function AdminLayout({
     if (isAuthLoading || !userId || !profile || profile.status !== 'approved') {
       setPermissions(null);
       setPermissionsError(null);
+      setAssignedRoleName(null);
       return () => {
         current = false;
       };
@@ -104,31 +108,55 @@ export default function AdminLayout({
     if (profile.role === 'super_admin') {
       setPermissions(['*']);
       setPermissionsError(null);
+      setAssignedRoleName('Super Admin');
       return () => {
         current = false;
       };
     }
 
-    setPermissions(null);
-    setPermissionsError(null);
-    void (async () => {
+    if (profile.role === 'admin' || profile.role === 'store_owner') {
+      setAssignedRoleName('Store Owner');
+    } else {
+      setAssignedRoleName(null);
+    }
+
+    let active = true;
+    const refreshPermissions = async () => {
       try {
-        const { data, error } = await supabase.rpc('get_my_permissions');
-        if (!current) return;
-        if (error) {
-          setPermissionsError(error.message);
+        const [permissionResult, roleResult] = await Promise.all([
+          supabase.rpc('get_my_permissions'),
+          supabase.rpc('get_my_store_role_name'),
+        ]);
+        if (!active) return;
+        if (permissionResult.error) {
+          setPermissionsError(permissionResult.error.message);
           setPermissions([]);
         } else {
-          setPermissions(Array.isArray(data) ? data as string[] : []);
+          setPermissions(Array.isArray(permissionResult.data) ? permissionResult.data as string[] : []);
+        }
+        if (!roleResult.error && typeof roleResult.data === 'string') {
+          setAssignedRoleName(roleResult.data);
+        } else if (roleResult.error) {
+          setAssignedRoleName(profile.role.replaceAll('_', ' '));
         }
       } catch (error) {
-        if (!current) return;
+        if (!active) return;
         setPermissionsError(error instanceof Error ? error.message : 'Permission verification failed.');
         setPermissions([]);
       }
-    })();
+    };
+    setPermissions(null);
+    setPermissionsError(null);
+    void refreshPermissions();
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshPermissions();
+    }, 15000);
+    const handleFocus = () => void refreshPermissions();
+    window.addEventListener('focus', handleFocus);
     return () => {
-      current = false;
+      active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
     };
   }, [isAuthLoading, profile, userId]);
 
@@ -174,6 +202,10 @@ export default function AdminLayout({
 
   const handleLogout = async () => {
     try {
+      const { error: activityError } = await supabase.rpc('log_employee_session_activity', {
+        target_action: 'logout',
+      });
+      if (activityError) console.warn(`[Activity] Unable to record logout: ${activityError.message}`);
       const { error } = await supabase.auth.signOut();
       if (error) {
         toast.error(error.message);
@@ -517,9 +549,9 @@ export default function AdminLayout({
                   </div>
                   <div className="hidden sm:block text-left">
                     <div className="text-sm font-medium">
-                      {typeof user?.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : user?.email || 'Account'}
+                      {profile?.full_name || (typeof user?.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : user?.email || 'Account')}
                     </div>
-                    <div className="text-xs text-muted-foreground">{user?.email}</div>
+                    <div className="text-xs text-muted-foreground capitalize">{assignedRoleName || profile?.role.replaceAll('_', ' ')}</div>
                   </div>
                   <ChevronDown className="w-4 h-4 text-muted-foreground hidden sm:block" />
                 </button>
@@ -534,9 +566,10 @@ export default function AdminLayout({
                     >
                       <div className="px-3 py-2 border-b border-border">
                         <div className="font-semibold text-sm">
-                          {typeof user?.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : user?.email || 'Account'}
+                          {profile?.full_name || (typeof user?.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : user?.email || 'Account')}
                         </div>
                         <div className="text-xs text-muted-foreground">{user?.email}</div>
+                        <div className="text-xs text-muted-foreground capitalize">{assignedRoleName || profile?.role.replaceAll('_', ' ')}</div>
                       </div>
                       <div className="py-1">
                         {user && (

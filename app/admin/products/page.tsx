@@ -69,6 +69,7 @@ export default function ProductsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
+  const [permissions, setPermissions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
 
@@ -111,22 +112,72 @@ export default function ProductsPage() {
     image_url: '' as string | null, status: 'active',
   });
   const [variants, setVariants] = useState<VariantRow[]>([]);
+  const canViewPurchasePrice = permissions.includes('*') || permissions.includes('actions.view_purchase_price');
+  const canViewProfit = canViewPurchasePrice
+    && (permissions.includes('*') || permissions.includes('actions.view_profit'));
 
-  useEffect(() => { loadData(); }, []);
-
-  async function loadData() {
+  const loadData = useCallback(async () => {
+    const permissionResult = await supabase.rpc('get_my_permissions');
+    if (permissionResult.error) {
+      console.error('[Products] Failed to load permissions:', permissionResult.error);
+      toast.error(t('products.loadFailed'));
+      setLoading(false);
+      return;
+    }
+    const permissionKeys = permissionResult.data || [];
+    const canReadPurchasePrice = permissionKeys.includes('*') || permissionKeys.includes('actions.view_purchase_price');
+    const productColumns = [
+      'id', 'name', 'sku', 'barcode', 'barcode_format', 'product_code', 'product_type',
+      'brand_id', 'category_id', 'description', 'short_description', 'product_notes',
+      'selling_price', 'discount_price', 'unit', 'tax_rate', 'tax_type', 'stock',
+      'damage_stock', 'min_stock', 'warehouse', 'rack_shelf', 'image_url', 'online_sale',
+      'is_deleted', 'status', 'created_at', 'updated_at',
+    ];
+    if (canReadPurchasePrice) productColumns.push('cost_price', 'wholesale_price');
+    const variantColumns = [
+      'id', 'product_id', 'variant_sku', 'barcode', 'size', 'color', 'material',
+      'weight', 'design', 'selling_price', 'stock_quantity', 'alert_limit',
+      'image_url', 'status', 'created_at',
+    ];
+    if (canReadPurchasePrice) variantColumns.push('purchase_price');
     const [prodRes, catRes, brandRes, unitRes] = await Promise.all([
-      supabase.from('products').select('*, brands(name), categories(name), product_variants(*)').order('created_at', { ascending: false }),
+      supabase.from('products')
+        .select(`${productColumns.join(',')}, brands(name), categories(name), product_variants(${variantColumns.join(',')})`)
+        .order('created_at', { ascending: false })
+        .returns<Product[]>(),
       supabase.from('categories').select('*').order('name'),
       supabase.from('brands').select('*').order('name'),
       supabase.from('units').select('*').eq('status', 'active').order('name'),
     ]);
-    setProducts(prodRes.data || []);
+    const failedResult = [
+      ['products', prodRes.error],
+      ['categories', catRes.error],
+      ['brands', brandRes.error],
+      ['units', unitRes.error],
+    ].find((entry) => entry[1]);
+    if (failedResult) {
+      console.error(`[Products] Failed to load ${failedResult[0]}:`, failedResult[1]);
+      toast.error(`${t('products.loadFailed')}: ${failedResult[0]}`);
+      setLoading(false);
+      return;
+    }
+    setPermissions(permissionKeys);
+    setProducts((prodRes.data || []).map((product) => ({
+      ...product,
+      cost_price: product.cost_price || 0,
+      wholesale_price: product.wholesale_price || 0,
+      product_variants: (product.product_variants || []).map((variant) => ({
+        ...variant,
+        purchase_price: variant.purchase_price || 0,
+      })),
+    })));
     setCategories(catRes.data || []);
     setBrands(brandRes.data || []);
     setUnits(unitRes.data || []);
     setLoading(false);
-  }
+  }, [t]);
+
+  useEffect(() => { void loadData(); }, [loadData]);
 
   // Debounced search
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -286,19 +337,23 @@ export default function ProductsPage() {
       description: formData.description || null,
       short_description: formData.short_description || null,
       product_notes: formData.product_notes || null,
-      cost_price: Number(formData.cost_price) || 0,
       selling_price: Number(formData.selling_price) || 0,
-      wholesale_price: Number(formData.wholesale_price) || 0,
       discount_price: formData.discount_price ? Number(formData.discount_price) : null,
       tax_rate: Number(formData.tax_rate) || 0,
       tax_type: formData.tax_type,
-      stock: Number(formData.stock) || 0,
       min_stock: Number(formData.min_stock),
       warehouse: formData.warehouse || null,
       rack_shelf: formData.rack_shelf || null,
       image_url: formData.image_url || null,
       status: formData.status,
     };
+    if (canViewPurchasePrice) {
+      data.cost_price = Number(formData.cost_price) || 0;
+      data.wholesale_price = Number(formData.wholesale_price) || 0;
+    } else if (!editingProduct) {
+      data.cost_price = 0;
+      data.wholesale_price = 0;
+    }
 
     const persistProduct = async () => {
       setSaving(true);
@@ -308,6 +363,7 @@ export default function ProductsPage() {
           const { error: updateError } = await supabase.from('products').update(data).eq('id', editingProduct.id);
           if (updateError) throw updateError;
         } else {
+          data.stock = Number(formData.stock) || 0;
           const { data: newProduct, error: insertError } = await supabase.from('products').insert(data).select().single();
           if (insertError) throw insertError;
           productId = newProduct.id;
@@ -325,7 +381,7 @@ export default function ProductsPage() {
           }
 
           for (const v of variants) {
-            const variantData = {
+            const variantData: Record<string, string | number | null> = {
               product_id: productId,
               variant_sku: v.variant_sku || null,
               barcode: v.barcode || null,
@@ -334,12 +390,12 @@ export default function ProductsPage() {
               material: v.material || null,
               weight: v.weight || null,
               design: v.design || null,
-              purchase_price: Number(v.purchase_price) || 0,
               selling_price: Number(v.selling_price) || 0,
               stock_quantity: Number(v.stock_quantity) || 0,
               alert_limit: Number(v.alert_limit) || 0,
               status: v.status,
             };
+            if (canViewPurchasePrice || !v.id) variantData.purchase_price = Number(v.purchase_price) || 0;
             const result = v.id
               ? await supabase.from('product_variants').update(variantData).eq('id', v.id)
               : await supabase.from('product_variants').insert(variantData);
@@ -381,12 +437,19 @@ export default function ProductsPage() {
 
   // Export functions
   const exportCSV = () => {
-    const headers = [t('common.name'), t('products.productCode'), t('products.sku'), t('products.barcode'), t('products.type'), t('products.brand'), t('products.category'), t('common.quantity'), t('products.alertLimit'), t('products.purchasePrice'), t('products.sellingPrice')];
+    const headers = [
+      t('common.name'), t('products.productCode'), t('products.sku'), t('products.barcode'),
+      t('products.type'), t('products.brand'), t('products.category'), t('common.quantity'),
+      t('products.alertLimit'),
+      ...(canViewPurchasePrice ? [t('products.purchasePrice')] : []),
+      t('products.sellingPrice'),
+    ];
     const rows = filtered.map((p) => [
       p.name, p.product_code || '', p.sku || '', p.barcode || '',
       p.product_type || 'simple', p.brands?.name || '', p.categories?.name || '',
       `${p.stock} ${p.unit}`, `${p.min_stock} ${p.unit}`,
-      p.cost_price, p.selling_price,
+      ...(canViewPurchasePrice ? [p.cost_price] : []),
+      p.selling_price,
     ]);
     const csv = [headers, ...rows].map((row) => row.map(escapeCsvCell).join(',')).join('\r\n');
     const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' });
@@ -398,12 +461,19 @@ export default function ProductsPage() {
   };
 
   const exportExcel = () => {
-    const headers = [t('common.name'), t('products.productCode'), t('products.sku'), t('products.barcode'), t('products.type'), t('products.brand'), t('products.category'), t('common.quantity'), t('products.alertLimit'), t('products.purchasePrice'), t('products.sellingPrice')];
+    const headers = [
+      t('common.name'), t('products.productCode'), t('products.sku'), t('products.barcode'),
+      t('products.type'), t('products.brand'), t('products.category'), t('common.quantity'),
+      t('products.alertLimit'),
+      ...(canViewPurchasePrice ? [t('products.purchasePrice')] : []),
+      t('products.sellingPrice'),
+    ];
     const rows = filtered.map((p) => [
       p.name, p.product_code || '', p.sku || '', p.barcode || '',
       p.product_type || 'simple', p.brands?.name || '', p.categories?.name || '',
       `${p.stock} ${p.unit}`, `${p.min_stock} ${p.unit}`,
-      p.cost_price, p.selling_price,
+      ...(canViewPurchasePrice ? [p.cost_price] : []),
+      p.selling_price,
     ]);
     const html = `<table><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr>${rows
       .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(typeof cell === 'string' ? safeSpreadsheetText(cell) : cell)}</td>`).join('')}</tr>`)
@@ -898,18 +968,18 @@ export default function ProductsPage() {
               <div className="space-y-4">
                 <h4 className="text-sm font-semibold text-indigo-600 dark:text-indigo-400">{t('products.pricing')}</h4>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
+                  {canViewPurchasePrice && <div className="space-y-2">
                     <Label>{t('products.purchasePrice')}</Label>
                     <Input type="number" step="0.01" min="0" value={formData.cost_price} onChange={(e) => setFormData({ ...formData, cost_price: e.target.value })} placeholder="৳500" />
-                  </div>
+                  </div>}
                   <div className="space-y-2">
                     <Label>{t('products.sellingPrice')}</Label>
                     <Input type="number" step="0.01" min="0" value={formData.selling_price} onChange={(e) => setFormData({ ...formData, selling_price: e.target.value })} placeholder="৳800" />
                   </div>
-                  <div className="space-y-2">
+                  {canViewPurchasePrice && <div className="space-y-2">
                     <Label>{t('products.wholesalePrice')}</Label>
                     <Input type="number" step="0.01" min="0" value={formData.wholesale_price} onChange={(e) => setFormData({ ...formData, wholesale_price: e.target.value })} placeholder="৳700" />
-                  </div>
+                  </div>}
                   <div className="space-y-2">
                     <Label>{t('products.discount')}</Label>
                     <Input type="number" step="0.01" min="0" value={formData.discount_price} onChange={(e) => setFormData({ ...formData, discount_price: e.target.value })} placeholder="৳600" />
@@ -925,7 +995,7 @@ export default function ProductsPage() {
                       <option value="inclusive">{t('products.inclusive')}</option>
                     </select>
                   </div>
-                  {Number(formData.selling_price) > 0 && (
+                  {canViewProfit && Number(formData.selling_price) > 0 && (
                     <div className="col-span-2 p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg flex gap-6">
                       <div>
                         <p className="text-xs text-muted-foreground">{t('products.profitAmount')}</p>
@@ -991,7 +1061,7 @@ export default function ProductsPage() {
                             <Input placeholder={t('products.design')} value={v.design} onChange={(e) => updateVariant(idx, 'design', e.target.value)} className="text-sm h-8" />
                             <Input placeholder={t('products.variantSku')} value={v.variant_sku} onChange={(e) => updateVariant(idx, 'variant_sku', e.target.value)} className="text-sm h-8" />
                             <Input placeholder={t('products.barcode')} value={v.barcode} onChange={(e) => updateVariant(idx, 'barcode', e.target.value)} className="text-sm h-8" />
-                            <Input placeholder={t('products.purchasePrice')} type="number" min="0" value={v.purchase_price} onChange={(e) => updateVariant(idx, 'purchase_price', e.target.value)} className="text-sm h-8" />
+                            {canViewPurchasePrice && <Input placeholder={t('products.purchasePrice')} type="number" min="0" value={v.purchase_price} onChange={(e) => updateVariant(idx, 'purchase_price', e.target.value)} className="text-sm h-8" />}
                             <Input placeholder={t('products.sellingPrice')} type="number" min="0" value={v.selling_price} onChange={(e) => updateVariant(idx, 'selling_price', e.target.value)} className="text-sm h-8" />
                             <Input placeholder={t('products.stock')} type="number" min="0" value={v.stock_quantity} onChange={(e) => updateVariant(idx, 'stock_quantity', e.target.value)} className="text-sm h-8" />
                             <Input placeholder={t('products.alertLimit')} type="number" min="0" value={v.alert_limit} onChange={(e) => updateVariant(idx, 'alert_limit', e.target.value)} className="text-sm h-8" />
@@ -1061,12 +1131,12 @@ export default function ProductsPage() {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="p-3 bg-muted/50 rounded-lg"><p className="text-xs text-muted-foreground">{t('products.purchasePrice')}</p><p className="font-bold">৳{viewProduct.cost_price}</p></div>
+                {canViewPurchasePrice && <div className="p-3 bg-muted/50 rounded-lg"><p className="text-xs text-muted-foreground">{t('products.purchasePrice')}</p><p className="font-bold">৳{viewProduct.cost_price}</p></div>}
                 <div className="p-3 bg-muted/50 rounded-lg"><p className="text-xs text-muted-foreground">{t('products.sellingPrice')}</p><p className="font-bold">৳{viewProduct.selling_price}</p></div>
-                <div className="p-3 bg-muted/50 rounded-lg"><p className="text-xs text-muted-foreground">{t('products.wholesalePrice')}</p><p className="font-bold">৳{viewProduct.wholesale_price || 0}</p></div>
+                {canViewPurchasePrice && <div className="p-3 bg-muted/50 rounded-lg"><p className="text-xs text-muted-foreground">{t('products.wholesalePrice')}</p><p className="font-bold">৳{viewProduct.wholesale_price || 0}</p></div>}
                 <div className="p-3 bg-muted/50 rounded-lg"><p className="text-xs text-muted-foreground">{t('products.currentStock')}</p><p className="font-bold">{viewProduct.stock} {viewProduct.unit}</p></div>
                 <div className="p-3 bg-muted/50 rounded-lg"><p className="text-xs text-muted-foreground">{t('products.alertLimit')}</p><p className="font-bold">{viewProduct.min_stock} {viewProduct.unit}</p></div>
-                <div className="p-3 bg-muted/50 rounded-lg"><p className="text-xs text-muted-foreground">{t('products.profitAmount')}</p><p className="font-bold text-indigo-600 dark:text-indigo-400">৳{(viewProduct.selling_price - viewProduct.cost_price).toFixed(0)}</p></div>
+                {canViewProfit && <div className="p-3 bg-muted/50 rounded-lg"><p className="text-xs text-muted-foreground">{t('products.profitAmount')}</p><p className="font-bold text-indigo-600 dark:text-indigo-400">৳{(viewProduct.selling_price - viewProduct.cost_price).toFixed(0)}</p></div>}
               </div>
               {viewProduct.barcode && (
                 <div className="p-4 bg-white rounded-lg border flex flex-col items-center gap-2">

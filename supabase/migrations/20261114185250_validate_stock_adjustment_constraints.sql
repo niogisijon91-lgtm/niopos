@@ -1,0 +1,7 @@
+BEGIN;
+ALTER TABLE public.stock_adjustments VALIDATE CONSTRAINT stock_adjustments_adjustment_type_check;
+ALTER TABLE public.stock_adjustments VALIDATE CONSTRAINT stock_adjustments_quantity_positive_check;
+ALTER TABLE public.stock_adjustments VALIDATE CONSTRAINT stock_adjustments_store_required_check;
+ALTER TABLE public.stock_adjustments VALIDATE CONSTRAINT stock_adjustments_reason_check;
+ALTER TABLE public.stock_adjustments VALIDATE CONSTRAINT stock_adjustments_other_reason_details_check;
+COMMIT;

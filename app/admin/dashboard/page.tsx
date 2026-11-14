@@ -150,7 +150,7 @@ export default function DashboardPage() {
         supabase.from('customers').select('total_due'),
         supabase.rpc('get_dashboard_inventory_totals'),
         supabase.from('settings').select('currency, currency_symbol').maybeSingle(),
-        supabase.from('sales').select('*, customers(name), employees(name), sale_items(*)').order('sale_date', { ascending: false }).limit(5),
+        supabase.from('sales').select('*, customers(name), sale_items(*)').order('sale_date', { ascending: false }).limit(5),
         supabase.rpc('get_sales_profit_summary', {
           p_date_from: todayStart,
           p_date_to: todayEnd,
@@ -212,7 +212,9 @@ export default function DashboardPage() {
         : Number(inventoryTotalsRes.data?.[0]?.stock_quantity ?? 0);
       const stockValue = inventoryTotalsRes.error
         ? null
-        : Number(inventoryTotalsRes.data?.[0]?.stock_value ?? 0);
+        : inventoryTotalsRes.data?.[0]?.stock_value == null
+          ? null
+          : Number(inventoryTotalsRes.data[0].stock_value);
       const currencySymbol = settingsRes.data?.currency_symbol?.trim()
         || (settingsRes.data?.currency === 'BDT' ? '৳' : settingsRes.data?.currency || '৳');
       const totalCustomerDue = sumRows(customerDueRes, (customer) => customer.total_due);
