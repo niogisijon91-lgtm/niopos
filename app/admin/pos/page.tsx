@@ -28,6 +28,7 @@ import {
   Keyboard,
   Gift,
   ChevronDown,
+  Loader2,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -77,6 +78,7 @@ export default function POSPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [storeSettings, setStoreSettings] = useState<Pick<Settings, 'store_name' | 'store_address' | 'store_phone' | 'store_email' | 'currency_symbol' | 'tax_rate' | 'receipt_footer' | 'domain' | 'trade_license_no' | 'tax_no'> | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [lastInvoice, setLastInvoice] = useState<any>(null);
@@ -95,6 +97,7 @@ export default function POSPage() {
   const [shortcutHint, setShortcutHint] = useState(false);
   const [printPortalReady, setPrintPortalReady] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const isSubmittingRef = useRef(false);
   const keyboardActionsRef = useRef({
     handleCheckout: () => {},
     handleHoldOrder: () => {},
@@ -176,6 +179,12 @@ export default function POSPage() {
       // Don't trigger when typing in inputs
       const tag = (e.target as HTMLElement)?.tagName;
       const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+      if (isSubmittingRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
 
       if (e.key === 'F2' && !isInput) {
         e.preventDefault();
@@ -336,6 +345,7 @@ export default function POSPage() {
   };
 
   const handleCheckout = async () => {
+    if (isSubmittingRef.current) return;
     if (cart.length === 0) {
       toast.error(t('pos.cartEmpty'));
       return;
@@ -345,7 +355,10 @@ export default function POSPage() {
       return;
     }
 
-    const { data: saleData, error } = await supabase.rpc('complete_pos_sale', {
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+
+    const saleRequest = {
       p_cart: cart.map((item) => ({
         product_id: item.product_id,
         quantity: item.quantity,
@@ -356,55 +369,69 @@ export default function POSPage() {
       p_discount: appliedExtraDiscount,
       p_payment_method: paymentMethod,
       p_paid_amount: paidAmount,
-      p_offer_id: selectedOffer?.id || null,
-    });
+      p_offer_id: selectedOfferId || null,
+    };
 
-    if (error || !saleData) {
-      toast.error(error?.message || t('pos.saleFailed'));
-      return;
+    try {
+      const requestFingerprint = JSON.stringify(saleRequest);
+      const idempotencyKey = usePOSStore.getState().getOrCreateSaleAttempt(requestFingerprint);
+      const { data: saleData, error } = await supabase.rpc('complete_pos_sale', {
+        ...saleRequest,
+        p_idempotency_key: idempotencyKey,
+      });
+
+      if (error || !saleData) {
+        toast.error(error?.message || t('pos.saleFailed'));
+        return;
+      }
+
+      // Refresh products
+      const { data: refreshed } = await supabase
+        .from('products')
+        .select('*, brands(name), categories(name)')
+        .eq('status', 'active')
+        .order('name');
+      setProducts(refreshed || []);
+
+      setLastInvoice({
+        ...saleData,
+        items: saleData.items.map((item: {
+          id: string;
+          name: string;
+          sku: string | null;
+          quantity: number;
+          price: number;
+          discount_amount: number;
+          total: number;
+        }) => ({
+          id: item.id,
+          name: item.name,
+          sku: item.sku,
+          quantity: Number(item.quantity),
+          price: Number(item.price),
+          discount_amount: Number(item.discount_amount),
+          total: Number(item.total),
+        })),
+        customer: saleData.customer_name_snapshot
+          ? {
+              name: saleData.customer_name_snapshot,
+              phone: saleData.customer_phone_snapshot,
+              address: saleData.customer_address_snapshot,
+            }
+          : null,
+      });
+      setCheckoutOpen(false);
+      setReceiptOpen(true);
+      setEligibleOffers([]);
+      clearTransaction();
+      setPaidAmount(0);
+      toast.success(t('pos.saleCompleted'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('pos.saleFailed'));
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
-
-    // Refresh products
-    const { data: refreshed } = await supabase
-      .from('products')
-      .select('*, brands(name), categories(name)')
-      .eq('status', 'active')
-      .order('name');
-    setProducts(refreshed || []);
-
-    setLastInvoice({
-      ...saleData,
-      items: saleData.items.map((item: {
-        id: string;
-        name: string;
-        sku: string | null;
-        quantity: number;
-        price: number;
-        discount_amount: number;
-        total: number;
-      }) => ({
-        id: item.id,
-        name: item.name,
-        sku: item.sku,
-        quantity: Number(item.quantity),
-        price: Number(item.price),
-        discount_amount: Number(item.discount_amount),
-        total: Number(item.total),
-      })),
-      customer: saleData.customer_name_snapshot
-        ? {
-            name: saleData.customer_name_snapshot,
-            phone: saleData.customer_phone_snapshot,
-            address: saleData.customer_address_snapshot,
-          }
-        : null,
-    });
-    setCheckoutOpen(false);
-    setReceiptOpen(true);
-    setEligibleOffers([]);
-    clearTransaction();
-    setPaidAmount(0);
-    toast.success(t('pos.saleCompleted'));
   };
 
   keyboardActionsRef.current = { handleCheckout, handleHoldOrder };
@@ -785,15 +812,29 @@ export default function POSPage() {
       </Card>
 
       {/* Checkout dialog */}
-      <Dialog open={checkoutOpen} onOpenChange={setCheckoutOpen}>
-        <DialogContent className="max-w-md">
+      <Dialog
+        open={checkoutOpen}
+        onOpenChange={(open) => {
+          if (!open && isSubmittingRef.current) return;
+          setCheckoutOpen(open);
+        }}
+      >
+        <DialogContent
+          className="max-w-md"
+          onKeyDownCapture={(event) => {
+            if (isSubmittingRef.current && event.key === 'Enter') {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
+        >
           <DialogHeader><DialogTitle>{t('pos.checkout')}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div>
               <p className="text-sm font-medium mb-2">{t('pos.paymentMethod')}</p>
               <div className="grid grid-cols-5 gap-2">
                 {paymentMethods.map((method) => (
-                  <button key={method.id} onClick={() => setPaymentMethod(method.id)} className={`flex flex-col items-center gap-1 p-3 rounded-lg border transition-all ${paymentMethod === method.id ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-muted'}`}>
+                  <button key={method.id} onClick={() => setPaymentMethod(method.id)} disabled={isSubmitting} className={`flex flex-col items-center gap-1 p-3 rounded-lg border transition-all ${paymentMethod === method.id ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-muted'}`}>
                     <method.icon className="w-5 h-5" />
                     <span className="text-xs">{t(`pos.${method.id}`)}</span>
                   </button>
@@ -827,21 +868,21 @@ export default function POSPage() {
             <div className="space-y-2">
               <Label>{t('pos.paidAmount')}</Label>
               <div className="flex gap-2">
-                <Input type="number" value={paidAmount || ''} onChange={(e) => setPaidAmount(Number(e.target.value) || 0)} placeholder={grandTotal.toFixed(2)} className="flex-1" />
-                <Button variant="outline" size="sm" onClick={() => setPaidAmount(grandTotal)}>{t('pos.exact')}</Button>
-                <Button variant="outline" size="icon" onClick={() => setShowKeypad(!showKeypad)}><Delete className="w-4 h-4" /></Button>
+                <Input type="number" value={paidAmount || ''} onChange={(e) => setPaidAmount(Number(e.target.value) || 0)} placeholder={grandTotal.toFixed(2)} className="flex-1" disabled={isSubmitting} />
+                <Button variant="outline" size="sm" onClick={() => setPaidAmount(grandTotal)} disabled={isSubmitting}>{t('pos.exact')}</Button>
+                <Button variant="outline" size="icon" onClick={() => setShowKeypad(!showKeypad)} disabled={isSubmitting}><Delete className="w-4 h-4" /></Button>
               </div>
               {/* Quick amount buttons */}
               <div className="flex gap-2">
                 {quickAmounts.map((amt) => (
-                  <Button key={amt} variant="outline" size="sm" className="flex-1" onClick={() => setPaidAmount(amt)}>{currencySymbol}{amt}</Button>
+                  <Button key={amt} variant="outline" size="sm" className="flex-1" onClick={() => setPaidAmount(amt)} disabled={isSubmitting}>{currencySymbol}{amt}</Button>
                 ))}
               </div>
               {/* Numeric keypad */}
               {showKeypad && (
                 <div className="grid grid-cols-3 gap-2 p-3 border rounded-lg">
                   {keypadButtons.map((key) => (
-                    <Button key={key} variant="outline" className="h-12 text-lg font-bold" onClick={() => { handleKeypad(key); setPaidAmount(Number(keypadValue) || 0); }}>
+                    <Button key={key} variant="outline" className="h-12 text-lg font-bold" onClick={() => { handleKeypad(key); setPaidAmount(Number(keypadValue) || 0); }} disabled={isSubmitting}>
                       {key}
                     </Button>
                   ))}
@@ -879,9 +920,16 @@ export default function POSPage() {
             </ScrollArea>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCheckoutOpen(false)}>{t('common.cancel')}</Button>
-            <Button className="bg-gradient-to-r from-slate-800 to-black hover:from-slate-700 hover:to-slate-900" onClick={handleCheckout}>
-              <CheckCircle2 className="w-4 h-4 mr-2" /> {t('pos.completeSale')} (F9)
+            <Button variant="outline" onClick={() => setCheckoutOpen(false)} disabled={isSubmitting}>{t('common.cancel')}</Button>
+            <Button
+              className="bg-gradient-to-r from-slate-800 to-black hover:from-slate-700 hover:to-slate-900"
+              onClick={handleCheckout}
+              disabled={isSubmitting}
+            >
+              {isSubmitting
+                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                : <CheckCircle2 className="mr-2 h-4 w-4" />}
+              {isSubmitting ? t('common.loading') : t('pos.completeSale')} (F9)
             </Button>
           </DialogFooter>
         </DialogContent>

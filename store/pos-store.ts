@@ -2,6 +2,11 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { CartItem, Product, Customer } from '@/types';
 
+type PendingSaleAttempt = {
+  fingerprint: string;
+  idempotencyKey: string;
+};
+
 export function calcLineDiscount(item: Pick<CartItem, 'price' | 'quantity' | 'discount_type' | 'discount_value'>): number {
   const lineSubtotal = item.price * item.quantity;
   const dtype = item.discount_type || 'percentage';
@@ -32,6 +37,7 @@ type POSState = {
   selectedCategory: string;
   selectedBrand: string;
   paidAmount: number;
+  pendingSaleAttempt: PendingSaleAttempt | null;
   setAuthUserId: (userId: string | null) => void;
   addToCart: (product: Product) => void;
   removeFromCart: (productId: string) => void;
@@ -46,6 +52,7 @@ type POSState = {
   setSelectedCategory: (category: string) => void;
   setSelectedBrand: (brand: string) => void;
   setPaidAmount: (amount: number) => void;
+  getOrCreateSaleAttempt: (fingerprint: string) => string;
   getSubtotal: () => number;
   getItemDiscounts: () => number;
   getTax: () => number;
@@ -66,6 +73,7 @@ export const usePOSStore = create<POSState>()(
       selectedCategory: 'all',
       selectedBrand: 'all',
       paidAmount: 0,
+      pendingSaleAttempt: null,
 
       setAuthUserId: (userId) =>
         set((state) => state.ownerId === userId ? state : {
@@ -80,6 +88,7 @@ export const usePOSStore = create<POSState>()(
           selectedCategory: 'all',
           selectedBrand: 'all',
           paidAmount: 0,
+          pendingSaleAttempt: null,
         }),
 
       addToCart: (product) => {
@@ -146,6 +155,7 @@ export const usePOSStore = create<POSState>()(
           paymentMethod: 'cash',
           selectedOfferId: null,
           paidAmount: 0,
+          pendingSaleAttempt: null,
         }),
 
       setCustomer: (customer) =>
@@ -157,6 +167,16 @@ export const usePOSStore = create<POSState>()(
       setSelectedCategory: (category) => set({ selectedCategory: category }),
       setSelectedBrand: (brand) => set({ selectedBrand: brand }),
       setPaidAmount: (amount) => set({ paidAmount: amount }),
+      getOrCreateSaleAttempt: (fingerprint) => {
+        const pendingAttempt = get().pendingSaleAttempt;
+        if (pendingAttempt?.fingerprint === fingerprint) {
+          return pendingAttempt.idempotencyKey;
+        }
+
+        const idempotencyKey = crypto.randomUUID();
+        set({ pendingSaleAttempt: { fingerprint, idempotencyKey } });
+        return idempotencyKey;
+      },
 
       getSubtotal: () =>
         get().cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
@@ -191,6 +211,7 @@ export const usePOSStore = create<POSState>()(
         selectedCategory: state.selectedCategory,
         selectedBrand: state.selectedBrand,
         paidAmount: state.paidAmount,
+        pendingSaleAttempt: state.pendingSaleAttempt,
       }),
     }
   )
