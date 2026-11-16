@@ -1105,6 +1105,8 @@
     "requestAdjustment": "সমন্বয়ের অনুরোধ",
     "applyAdjustment": "সমন্বয় প্রয়োগ করুন",
     "adjustmentApplied": "স্টক সমন্বয় সফলভাবে প্রয়োগ করা হয়েছে",
+    "inventoryUpdated": "ইনভেন্টরির স্টক আপডেট হয়েছে।",
+    "bulkVerifiedApplied": "{verified}টি যাচাই হয়েছে; {adjusted}টি ইনভেন্টরি স্টক আপডেট হয়েছে।",
     "adjustmentConfirm": "স্টক সমন্বয় নিশ্চিত করুন",
     "stockChangedSinceVerification": "যাচাইয়ের পর স্টক পরিবর্তিত হয়েছে। মূল সিস্টেম পরিমাণ: {original}। বর্তমান সিস্টেম পরিমাণ: {current}।",
     "previousQuantity": "পূর্বের পরিমাণ",

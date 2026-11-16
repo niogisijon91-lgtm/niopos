@@ -321,6 +321,14 @@ export default function StockReconciliationPage() {
   const canApplyAdjustment = permissions.includes('*') || permissions.includes('stock_reconciliation.edit');
   const canExport = permissions.includes('*') || permissions.includes('stock_reconciliation.export');
   const canPrint = permissions.includes('*') || permissions.includes('stock_reconciliation.print');
+  const canApplyDifference = (difference: number) => {
+    if (difference === 0) return true;
+    const directionPermission = difference > 0
+      ? 'actions.adjust_stock_increase'
+      : 'actions.adjust_stock_decrease';
+    return canApplyAdjustment
+      && (permissions.includes('*') || permissions.includes(directionPermission));
+  };
 
   // Verify stock
   const handleOpenVerify = (product: ProductWithRecon) => {
@@ -351,6 +359,10 @@ export default function StockReconciliationPage() {
     const diff = physical - systemQty;
     const status: ReconciliationStatus = diff === 0 ? 'CHECKED' : 'DIFFERENCE_FOUND';
 
+    if (!canApplyDifference(diff)) {
+      toast.error(t('stockAdjustments.noPermission'));
+      return;
+    }
     if (status === 'DIFFERENCE_FOUND' && !reason) {
       toast.error(t('reconciliation.reasonRequired'));
       return;
@@ -382,13 +394,21 @@ export default function StockReconciliationPage() {
       if (diff === 0) {
         toast.success(t('reconciliation.verifySuccess'));
       } else {
-        toast.success(t('reconciliation.verifyDifferenceFound', { diff: diff > 0 ? `+${diff}` : String(diff) }));
+        toast.success(
+          `${t('reconciliation.verifyDifferenceFound', { diff: diff > 0 ? `+${diff}` : String(diff) })} ${t('reconciliation.inventoryUpdated')}`
+        );
       }
 
       setVerifyProduct(null);
       await loadData();
-    } catch {
-      toast.error(t('reconciliation.verifyError'));
+    } catch (error) {
+      console.error('[Stock reconciliation] Failed to verify and apply stock:', error);
+      const message = error instanceof Error
+        ? error.message
+        : typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+          ? error.message
+          : t('reconciliation.verifyError');
+      toast.error(message);
     } finally {
       setSaving(false);
     }
@@ -425,7 +445,7 @@ export default function StockReconciliationPage() {
 
     setBulkSaving(true);
     let successCount = 0;
-    let errorCount = 0;
+    let adjustmentCount = 0;
 
     try {
       const items: { product_id: string; physical_quantity: number; reason: string }[] = [];
@@ -442,6 +462,13 @@ export default function StockReconciliationPage() {
           return;
         }
 
+        const difference = physical - Number(p.stock);
+        if (!canApplyDifference(difference)) {
+          toast.error(t('stockAdjustments.noPermission'));
+          return;
+        }
+        if (difference !== 0) adjustmentCount++;
+
         items.push({
           product_id: p.id,
           physical_quantity: physical,
@@ -455,14 +482,21 @@ export default function StockReconciliationPage() {
         successCount = items.length;
       }
 
-      toast.success(`${successCount} ${t('reconciliation.verified')}`);
+      toast.success(adjustmentCount > 0
+        ? t('reconciliation.bulkVerifiedApplied', { verified: successCount, adjusted: adjustmentCount })
+        : `${successCount} ${t('reconciliation.verified')}`);
       setBulkMode(false);
       setSelectedIds(new Set());
       setBulkQuantities({});
       await loadData();
-    } catch {
-      toast.error(t('reconciliation.verifyError'));
-      errorCount++;
+    } catch (error) {
+      console.error('[Stock reconciliation] Failed to bulk verify and apply stock:', error);
+      const message = error instanceof Error
+        ? error.message
+        : typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+          ? error.message
+          : t('reconciliation.verifyError');
+      toast.error(message);
     } finally {
       setBulkSaving(false);
     }

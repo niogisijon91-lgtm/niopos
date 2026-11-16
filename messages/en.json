@@ -1105,6 +1105,8 @@
     "requestAdjustment": "Request Adjustment",
     "applyAdjustment": "Apply Adjustment",
     "adjustmentApplied": "Stock adjustment applied successfully",
+    "inventoryUpdated": "Inventory stock was updated.",
+    "bulkVerifiedApplied": "{verified} verified; {adjusted} inventory stock values updated.",
     "adjustmentConfirm": "Confirm Stock Adjustment",
     "stockChangedSinceVerification": "Stock changed since verification. Original system quantity: {original}. Current system quantity: {current}.",
     "previousQuantity": "Previous Quantity",
