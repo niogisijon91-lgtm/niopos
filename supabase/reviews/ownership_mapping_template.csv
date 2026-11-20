@@ -1,0 +1,3 @@
+entity_type,record_id,current_name,current_short_name,current_unit,target_store_id,target_unit_id,duplicate_disposition,evidence_reference,approved_by,approved_at
+unit,<unit-uuid>,,,,,,,,,
+product,<product-uuid>,,,,pcs,,,,,
