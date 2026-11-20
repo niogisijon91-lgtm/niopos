@@ -76,6 +76,18 @@ function normalizeStockMovements(movements: StockMovementWithProductRelation[] |
   });
 }
 
+function attachStockMovementProducts(
+  movements: StockMovement[],
+  productsById: Map<string, Pick<Product, 'id' | 'name'>>
+): StockMovement[] {
+  return movements.map((movement) => ({
+    ...movement,
+    products: movement.products?.name
+      ? movement.products
+      : productsById.get(movement.product_id) || null,
+  }));
+}
+
 function getStockStatus(product: Product, t: (key: string) => string) {
   if (Number(product.stock) <= 0) {
     return { label: t('inventory.outOfStock'), className: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400' };
@@ -170,10 +182,35 @@ export default function InventoryPage() {
       return;
     }
 
-    setProducts((productResult.data || []).map((product) => ({
+    const activeProducts = (productResult.data || []).map((product) => ({
       ...product,
       cost_price: 'cost_price' in product ? product.cost_price : 0,
-    })) as Product[]);
+    })) as Product[];
+    const normalizedMovements = normalizeStockMovements(movementResult.data);
+    const productsById = new Map<string, Pick<Product, 'id' | 'name'>>(
+      activeProducts.map(({ id, name }) => [id, { id, name }])
+    );
+    const unresolvedProductIds = Array.from(new Set(
+      normalizedMovements
+        .filter((movement) => !movement.products?.name && !productsById.has(movement.product_id))
+        .map((movement) => movement.product_id)
+        .filter(Boolean)
+    ));
+    if (unresolvedProductIds.length > 0) {
+      const { data: relatedProducts, error: relatedProductsError } = await supabase
+        .from('products')
+        .select('id, name')
+        .in('id', unresolvedProductIds)
+        .returns<Pick<Product, 'id' | 'name'>[]>();
+      if (relatedProductsError) {
+        console.error('[Inventory] Failed to resolve stock movement product names:', relatedProductsError);
+        toast.error(`${t('dashboard.metricsLoadFailed')}: product names`);
+      } else {
+        (relatedProducts || []).forEach((product) => productsById.set(product.id, product));
+      }
+    }
+
+    setProducts(activeProducts);
     setPermissions(permissionKeys);
     setInventoryStockValue(
       canReadStockValue && totalsResult.data?.[0]?.stock_value != null
@@ -181,7 +218,7 @@ export default function InventoryPage() {
         : null
     );
     setCategories((categoryResult.data || []) as Category[]);
-    setMovements(normalizeStockMovements(movementResult.data));
+    setMovements(attachStockMovementProducts(normalizedMovements, productsById));
     setCurrencySymbol(
       settingsResult.data?.currency_symbol?.trim()
         || (settingsResult.data?.currency === 'BDT' ? '৳' : settingsResult.data?.currency || '৳')
@@ -239,7 +276,11 @@ export default function InventoryPage() {
           console.error('[Inventory] Failed to load product stock history:', error);
           toast.error(t('inventory.historyLoadFailed'));
         } else {
-          setHistoryRows(normalizeStockMovements(data));
+          const historyMovements = normalizeStockMovements(data).map((movement) => ({
+            ...movement,
+            products: movement.products || { id: historyProduct.id, name: historyProduct.name },
+          }));
+          setHistoryRows(historyMovements);
           setHistoryCount(count || 0);
         }
         setHistoryLoading(false);
