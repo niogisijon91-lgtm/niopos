@@ -537,6 +537,8 @@
     "retrieve": "Retrieve",
     "orderHeld": "Order held",
     "productOutOfStock": "{name} is out of stock",
+    "productsNotLoaded": "Products could not be loaded. Please retry before checking out.",
+    "unavailableCartProductsRemoved": "Unavailable products were removed from your cart. Please review it before continuing.",
     "minimumPurchaseNotMet": "Minimum purchase not met"
   },
   "sales": {

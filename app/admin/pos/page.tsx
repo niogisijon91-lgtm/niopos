@@ -78,6 +78,7 @@ export default function POSPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [storeSettings, setStoreSettings] = useState<Pick<Settings, 'store_name' | 'store_address' | 'store_phone' | 'store_email' | 'currency_symbol' | 'tax_rate' | 'receipt_footer' | 'domain' | 'trade_license_no' | 'tax_no'> | null>(null);
   const [loading, setLoading] = useState(true);
+  const [productsLoaded, setProductsLoaded] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [receiptOpen, setReceiptOpen] = useState(false);
@@ -145,14 +146,20 @@ export default function POSPage() {
   useEffect(() => {
     async function loadData() {
       const [prodRes, catRes, custRes, brandRes, heldRes, settingsRes] = await Promise.all([
-        supabase.from('products').select('*, brands(name), categories(name)').eq('status', 'active').order('name'),
+        supabase.from('products').select('*, brands(name), categories(name)').eq('status', 'active').eq('is_deleted', false).order('name'),
         supabase.from('categories').select('*').eq('status', 'active').order('name'),
         supabase.from('customers').select('*').eq('status', 'active').order('name'),
         supabase.from('brands').select('*').eq('status', 'active').order('name'),
         supabase.from('held_orders').select('*').eq('status', 'held').order('hold_time', { ascending: false }),
         supabase.from('settings').select('store_name, store_address, store_phone, store_email, currency_symbol, tax_rate, receipt_footer, domain, trade_license_no, tax_no').maybeSingle(),
       ]);
-      setProducts(prodRes.data || []);
+      if (prodRes.error) {
+        console.error('[POS] Failed to load products:', prodRes.error);
+        toast.error(`${t('dashboard.metricsLoadFailed')}: products`);
+      } else {
+        setProducts(prodRes.data || []);
+        setProductsLoaded(true);
+      }
       setCategories(catRes.data || []);
       setCustomers(custRes.data || []);
       setBrands(brandRes.data || []);
@@ -172,6 +179,16 @@ export default function POSPage() {
     }
     loadData();
   }, [setCustomer, t]);
+
+  useEffect(() => {
+    if (!productsLoaded) return;
+    const availableProductIds = new Set(products.map((product) => product.id));
+    const unavailableCartItems = cart.filter((item) => !availableProductIds.has(item.product_id));
+    if (unavailableCartItems.length === 0) return;
+
+    unavailableCartItems.forEach((item) => removeFromCart(item.product_id));
+    toast.error(t('pos.unavailableCartProductsRemoved'));
+  }, [cart, products, productsLoaded, removeFromCart, t]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -346,6 +363,10 @@ export default function POSPage() {
 
   const handleCheckout = async () => {
     if (isSubmittingRef.current) return;
+    if (!productsLoaded) {
+      toast.error(t('pos.productsNotLoaded'));
+      return;
+    }
     if (cart.length === 0) {
       toast.error(t('pos.cartEmpty'));
       return;
@@ -386,12 +407,19 @@ export default function POSPage() {
       }
 
       // Refresh products
-      const { data: refreshed } = await supabase
+      const { data: refreshed, error: refreshError } = await supabase
         .from('products')
         .select('*, brands(name), categories(name)')
         .eq('status', 'active')
+        .eq('is_deleted', false)
         .order('name');
-      setProducts(refreshed || []);
+      if (refreshError) {
+        console.error('[POS] Failed to refresh products after sale:', refreshError);
+        toast.error(`${t('dashboard.metricsLoadFailed')}: products`);
+      } else {
+        setProducts(refreshed || []);
+        setProductsLoaded(true);
+      }
 
       setLastInvoice({
         ...saleData,
@@ -805,7 +833,7 @@ export default function POSPage() {
             ))}
           </div> */}
 
-          <Button className="h-10 w-full rounded-lg bg-gradient-to-r from-slate-800 to-black px-2 text-xs font-semibold shadow-sm hover:from-slate-700 hover:to-slate-900 sm:text-sm" size="lg" disabled={cart.length === 0} onClick={() => setCheckoutOpen(true)}>
+          <Button className="h-10 w-full rounded-lg bg-gradient-to-r from-slate-800 to-black px-2 text-xs font-semibold shadow-sm hover:from-slate-700 hover:to-slate-900 sm:text-sm" size="lg" disabled={cart.length === 0 || !productsLoaded} onClick={() => setCheckoutOpen(true)}>
             <Receipt className="w-4 h-4 mr-2" /> {t('pos.checkout')} · {currencySymbol}{grandTotal.toFixed(2)} (F8)
           </Button>
         </div>

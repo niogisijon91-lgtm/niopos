@@ -141,7 +141,7 @@ export default function InventoryPage() {
         .select(`${movementFields.join(',')}, products(id, name)`)
         .order('created_at', { ascending: false })
         .limit(30)
-        .returns<(StockMovement & { products: { id: string; name: string }[] | null })[]>(),
+        .returns<StockMovement[]>(),
       supabase.from('settings').select('currency, currency_symbol').maybeSingle(),
       supabase.rpc('get_dashboard_inventory_totals'),
     ]);
@@ -171,10 +171,7 @@ export default function InventoryPage() {
         : null
     );
     setCategories((categoryResult.data || []) as Category[]);
-    setMovements((movementResult.data || []).map(({ products: relatedProducts, ...movement }) => ({
-      ...movement,
-      products: relatedProducts?.[0] || null,
-    })));
+    setMovements(movementResult.data || []);
     setCurrencySymbol(
       settingsResult.data?.currency_symbol?.trim()
         || (settingsResult.data?.currency === 'BDT' ? '৳' : settingsResult.data?.currency || '৳')
@@ -225,17 +222,14 @@ export default function InventoryPage() {
       .eq('product_id', historyProduct.id)
       .order('created_at', { ascending: false })
       .range(from, from + HISTORY_PAGE_SIZE - 1)
-      .returns<(StockMovement & { products: { id: string; name: string }[] | null })[]>()
+      .returns<StockMovement[]>()
       .then(({ data, error, count }) => {
         if (!active) return;
         if (error) {
           console.error('[Inventory] Failed to load product stock history:', error);
           toast.error(t('inventory.historyLoadFailed'));
         } else {
-          setHistoryRows((data || []).map(({ products: relatedProducts, ...movement }) => ({
-            ...movement,
-            products: relatedProducts?.[0] || null,
-          })));
+          setHistoryRows(data || []);
           setHistoryCount(count || 0);
         }
         setHistoryLoading(false);
