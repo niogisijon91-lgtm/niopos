@@ -41,6 +41,9 @@ import { useTranslation } from '@/hooks/use-translation';
 
 type StockDirection = 'in' | 'out';
 type StockFilter = 'all' | 'in_stock' | 'low_stock' | 'out_of_stock';
+type StockMovementWithProductRelation = Omit<StockMovement, 'products'> & {
+  products: Pick<Product, 'id' | 'name'>[] | null;
+};
 
 const PAGE_SIZE = 10;
 const HISTORY_PAGE_SIZE = 20;
@@ -64,6 +67,13 @@ const stockOutReasons = [
 
 function unitAllowsDecimalQuantity(unit: string | null | undefined): boolean {
   return /^(kg|g|gram|grams|liter|litre|l|ml|meter|metre|m|cm|mm)$/i.test((unit || '').trim());
+}
+
+function normalizeStockMovements(movements: StockMovementWithProductRelation[] | null): StockMovement[] {
+  return (movements || []).map(({ products, ...movement }) => ({
+    ...movement,
+    products: products?.[0] || null,
+  }));
 }
 
 function getStockStatus(product: Product, t: (key: string) => string) {
@@ -141,7 +151,7 @@ export default function InventoryPage() {
         .select(`${movementFields.join(',')}, products(id, name)`)
         .order('created_at', { ascending: false })
         .limit(30)
-        .returns<StockMovement[]>(),
+        .returns<StockMovementWithProductRelation[]>(),
       supabase.from('settings').select('currency, currency_symbol').maybeSingle(),
       supabase.rpc('get_dashboard_inventory_totals'),
     ]);
@@ -171,7 +181,7 @@ export default function InventoryPage() {
         : null
     );
     setCategories((categoryResult.data || []) as Category[]);
-    setMovements(movementResult.data || []);
+    setMovements(normalizeStockMovements(movementResult.data));
     setCurrencySymbol(
       settingsResult.data?.currency_symbol?.trim()
         || (settingsResult.data?.currency === 'BDT' ? '৳' : settingsResult.data?.currency || '৳')
@@ -222,14 +232,14 @@ export default function InventoryPage() {
       .eq('product_id', historyProduct.id)
       .order('created_at', { ascending: false })
       .range(from, from + HISTORY_PAGE_SIZE - 1)
-      .returns<StockMovement[]>()
+      .returns<StockMovementWithProductRelation[]>()
       .then(({ data, error, count }) => {
         if (!active) return;
         if (error) {
           console.error('[Inventory] Failed to load product stock history:', error);
           toast.error(t('inventory.historyLoadFailed'));
         } else {
-          setHistoryRows(data || []);
+          setHistoryRows(normalizeStockMovements(data));
           setHistoryCount(count || 0);
         }
         setHistoryLoading(false);
