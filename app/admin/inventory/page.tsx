@@ -42,7 +42,7 @@ import { useTranslation } from '@/hooks/use-translation';
 type StockDirection = 'in' | 'out';
 type StockFilter = 'all' | 'in_stock' | 'low_stock' | 'out_of_stock';
 type StockMovementWithProductRelation = Omit<StockMovement, 'products'> & {
-  products: Pick<Product, 'id' | 'name'>[] | null;
+  products: Pick<Product, 'id' | 'name'> | Pick<Product, 'id' | 'name'>[] | null;
 };
 
 const PAGE_SIZE = 10;
@@ -70,10 +70,10 @@ function unitAllowsDecimalQuantity(unit: string | null | undefined): boolean {
 }
 
 function normalizeStockMovements(movements: StockMovementWithProductRelation[] | null): StockMovement[] {
-  return (movements || []).map(({ products, ...movement }) => ({
-    ...movement,
-    products: products?.[0] || null,
-  }));
+  return (movements || []).map(({ products, ...movement }) => {
+    const product = Array.isArray(products) ? products[0] : products;
+    return { ...movement, products: product || null };
+  });
 }
 
 function getStockStatus(product: Product, t: (key: string) => string) {
