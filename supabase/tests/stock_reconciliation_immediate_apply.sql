@@ -2,17 +2,18 @@
 BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
-SELECT plan(25);
+SELECT plan(30);
 
 CREATE TEMP TABLE stock_reconciliation_test_fixture (
   owner_id uuid NOT NULL,
   store_id uuid,
   product_a uuid NOT NULL,
-  product_b uuid NOT NULL
+  product_b uuid NOT NULL,
+  product_c uuid NOT NULL
 );
 
 INSERT INTO stock_reconciliation_test_fixture
-VALUES (gen_random_uuid(), NULL, gen_random_uuid(), gen_random_uuid());
+VALUES (gen_random_uuid(), NULL, gen_random_uuid(), gen_random_uuid(), gen_random_uuid());
 
 INSERT INTO auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -46,6 +47,9 @@ SELECT product_a, store_id, 'Reconciliation Test A', 'pcs', 1, 2, 3, 'active'
 FROM stock_reconciliation_test_fixture
 UNION ALL
 SELECT product_b, store_id, 'Reconciliation Test B', 'pcs', 1, 2, 5, 'active'
+FROM stock_reconciliation_test_fixture
+UNION ALL
+SELECT product_c, store_id, 'Reconciliation Test C', 'pcs', 1, 2, NULL, 'active'
 FROM stock_reconciliation_test_fixture;
 
 GRANT SELECT, UPDATE ON TABLE stock_reconciliation_test_fixture TO authenticated;
@@ -207,6 +211,42 @@ SELECT is(
   (SELECT stock_value FROM public.get_dashboard_inventory_totals()),
   2::numeric,
   'dashboard stock value updates after bulk reconciliation'
+);
+
+SELECT is(
+  (SELECT stock FROM public.products
+   WHERE id = (SELECT product_c FROM stock_reconciliation_test_fixture)),
+  NULL::numeric,
+  'an uncounted product keeps a null software stock until it is reconciled'
+);
+SELECT is(
+  public.record_stock_reconciliations(
+    jsonb_build_array(jsonb_build_object(
+      'product_id', (SELECT product_c FROM stock_reconciliation_test_fixture),
+      'physical_quantity', 0
+    ))
+  ),
+  1,
+  'a zero physical count is recorded when software stock is null'
+);
+SELECT is(
+  (SELECT stock FROM public.products
+   WHERE id = (SELECT product_c FROM stock_reconciliation_test_fixture)),
+  0::numeric,
+  'a zero physical count normalizes null software stock to zero'
+);
+SELECT is(
+  (SELECT status FROM public.stock_reconciliations
+   WHERE product_id = (SELECT product_c FROM stock_reconciliation_test_fixture)
+   ORDER BY checked_at DESC LIMIT 1),
+  'CHECKED',
+  'zero physical stock against null software stock is checked without a difference'
+);
+SELECT is(
+  (SELECT count(*)::integer FROM public.stock_adjustments
+   WHERE product_id = (SELECT product_c FROM stock_reconciliation_test_fixture)),
+  0,
+  'normalizing null software stock to zero does not create a zero-quantity adjustment'
 );
 
 SELECT is(

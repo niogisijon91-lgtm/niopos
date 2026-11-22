@@ -183,6 +183,12 @@ BEGIN
         v_reconciliation_id,
         NULL
       );
+    ELSIF v_product.stock IS NULL THEN
+      UPDATE public.products
+      SET stock = v_physical,
+          updated_at = pg_catalog.clock_timestamp()
+      WHERE id = v_product.id
+        AND store_id = v_store_id;
     END IF;
 
     v_inserted := v_inserted + 1;
