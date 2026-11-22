@@ -1091,6 +1091,7 @@
     "reason": "Reason",
     "reasonDetails": "Reason Details",
     "reasonRequired": "Reason is required when there is a difference",
+    "noPhysicalCount": "Enter a physical stock count. Blank counts are left unchanged.",
     "damagedProduct": "Damaged Product",
     "lostProduct": "Lost Product",
     "wrongSalesEntry": "Wrong Sales Entry",

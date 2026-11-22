@@ -2,7 +2,7 @@
 BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
-SELECT plan(17);
+SELECT plan(25);
 
 CREATE TEMP TABLE stock_reconciliation_test_fixture (
   owner_id uuid NOT NULL,
@@ -63,6 +63,19 @@ SELECT set_config(
     'role', 'authenticated'
   )::text,
   true
+);
+
+SELECT is(
+  (SELECT stock FROM public.products
+   WHERE id = (SELECT product_b FROM stock_reconciliation_test_fixture)),
+  5::numeric,
+  'a product without a reconciliation keeps its existing stock'
+);
+SELECT is(
+  (SELECT count(*)::integer FROM public.stock_reconciliations
+   WHERE product_id = (SELECT product_b FROM stock_reconciliation_test_fixture)),
+  0,
+  'a product without a reconciliation has no history row'
 );
 
 SELECT is(
@@ -148,6 +161,12 @@ SELECT is(
   'CHECKED',
   'an unchanged physical count is marked checked'
 );
+SELECT is(
+  (SELECT count(*)::integer FROM public.stock_adjustments
+   WHERE product_id = (SELECT product_a FROM stock_reconciliation_test_fixture)),
+  1,
+  'repeating an unchanged physical count does not duplicate its stock adjustment'
+);
 
 SELECT is(
   public.record_stock_reconciliations(
@@ -188,6 +207,61 @@ SELECT is(
   (SELECT stock_value FROM public.get_dashboard_inventory_totals()),
   2::numeric,
   'dashboard stock value updates after bulk reconciliation'
+);
+
+SELECT is(
+  public.record_stock_reconciliations(
+    jsonb_build_array(
+      jsonb_build_object(
+        'product_id', (SELECT product_a FROM stock_reconciliation_test_fixture),
+        'physical_quantity', NULL
+      ),
+      jsonb_build_object(
+        'product_id', (SELECT product_b FROM stock_reconciliation_test_fixture),
+        'physical_quantity', ''
+      )
+    )
+  ),
+  0,
+  'null and empty physical counts are skipped'
+);
+SELECT is(
+  (SELECT stock FROM public.products
+   WHERE id = (SELECT product_a FROM stock_reconciliation_test_fixture)),
+  0::numeric,
+  'a null physical count leaves existing zero stock unchanged'
+);
+SELECT is(
+  (SELECT stock FROM public.products
+   WHERE id = (SELECT product_b FROM stock_reconciliation_test_fixture)),
+  2::numeric,
+  'an empty physical count leaves existing stock unchanged'
+);
+SELECT is(
+  (SELECT count(*)::integer FROM public.stock_reconciliations
+   WHERE product_id IN (
+     SELECT product_a FROM stock_reconciliation_test_fixture
+     UNION ALL
+     SELECT product_b FROM stock_reconciliation_test_fixture
+   )),
+  4,
+  'skipped physical counts do not add reconciliation history'
+);
+SELECT is(
+  (SELECT count(*)::integer
+   FROM public.stock_movements AS movement
+   JOIN public.stock_adjustments AS adjustment
+     ON adjustment.id = movement.stock_adjustment_id
+   WHERE adjustment.reconciliation_id IN (
+     SELECT id FROM public.stock_reconciliations
+     WHERE product_id IN (
+       SELECT product_a FROM stock_reconciliation_test_fixture
+       UNION ALL
+       SELECT product_b FROM stock_reconciliation_test_fixture
+     )
+   )),
+  3,
+  'skipped physical counts do not duplicate stock movements'
 );
 
 RESET ROLE;

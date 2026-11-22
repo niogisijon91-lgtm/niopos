@@ -178,6 +178,41 @@ export default function POSPage() {
       setLoading(false);
     }
     loadData();
+
+    let refreshTimeout: number | null = null;
+    const refreshProducts = async () => {
+      const { data, error } = await supabase
+        .from('products')
+        .select('*, brands(name), categories(name)')
+        .eq('status', 'active')
+        .eq('is_deleted', false)
+        .order('name');
+      if (error) {
+        console.error('[POS] Failed to refresh products after inventory update:', error);
+        toast.error(`${t('dashboard.metricsLoadFailed')}: products`);
+        return;
+      }
+      setProducts(data || []);
+      setProductsLoaded(true);
+    };
+    const channel = supabase
+      .channel('pos-product-stock')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        if (refreshTimeout !== null) window.clearTimeout(refreshTimeout);
+        refreshTimeout = window.setTimeout(() => {
+          refreshTimeout = null;
+          if (document.visibilityState === 'visible') void refreshProducts();
+        }, 250);
+      })
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.error('[POS] Product stock realtime subscription failed:', status);
+        }
+      });
+    return () => {
+      if (refreshTimeout !== null) window.clearTimeout(refreshTimeout);
+      void supabase.removeChannel(channel);
+    };
   }, [setCustomer, t]);
 
   useEffect(() => {

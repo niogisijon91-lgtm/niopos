@@ -1091,6 +1091,7 @@
     "reason": "কারণ",
     "reasonDetails": "কারণের বিবরণ",
     "reasonRequired": "পার্থক্য থাকলে কারণ আবশ্যক",
+    "noPhysicalCount": "প্রকৃত স্টকের পরিমাণ লিখুন। ফাঁকা রাখলে স্টক অপরিবর্তিত থাকবে।",
     "damagedProduct": "ক্ষতিগ্রস্ত পণ্য",
     "lostProduct": "হারিয়ে যাওয়া পণ্য",
     "wrongSalesEntry": "ভুল বিক্রয় এন্ট্রি",

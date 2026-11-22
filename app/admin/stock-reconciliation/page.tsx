@@ -333,7 +333,7 @@ export default function StockReconciliationPage() {
   // Verify stock
   const handleOpenVerify = (product: ProductWithRecon) => {
     setVerifyProduct(product);
-    setPhysicalQty(String(product.stock));
+    setPhysicalQty('');
     setReason('');
     setReasonDetails('');
   };
@@ -344,10 +344,13 @@ export default function StockReconciliationPage() {
       return;
     }
     if (!verifyProduct) return;
+    if (physicalQty.trim() === '') {
+      toast.error(t('reconciliation.noPhysicalCount'));
+      return;
+    }
     const physical = Number(physicalQty);
     if (
-      physicalQty.trim() === ''
-      || !Number.isFinite(physical)
+      !Number.isFinite(physical)
       || physical < 0
       || (!unitAllowsDecimalQuantity(verifyProduct.unit) && !Number.isInteger(physical))
     ) {
@@ -451,7 +454,7 @@ export default function StockReconciliationPage() {
       const items: { product_id: string; physical_quantity: number; reason: string }[] = [];
       for (const p of selectedProducts) {
         const qtyStr = bulkQuantities[p.id];
-        if (!qtyStr) continue;
+        if (qtyStr == null || qtyStr.trim() === '') continue;
         const physical = Number(qtyStr);
         if (
           !Number.isFinite(physical)
@@ -476,11 +479,14 @@ export default function StockReconciliationPage() {
         });
       }
 
-      if (items.length > 0) {
-        const { error } = await supabase.rpc('record_stock_reconciliations', { p_items: items });
-        if (error) throw error;
-        successCount = items.length;
+      if (items.length === 0) {
+        toast.error(t('reconciliation.noPhysicalCount'));
+        return;
       }
+
+      const { error } = await supabase.rpc('record_stock_reconciliations', { p_items: items });
+      if (error) throw error;
+      successCount = items.length;
 
       toast.success(adjustmentCount > 0
         ? t('reconciliation.bulkVerifiedApplied', { verified: successCount, adjusted: adjustmentCount })
