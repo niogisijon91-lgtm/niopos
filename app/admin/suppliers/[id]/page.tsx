@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Building2, CalendarDays, Wallet } from 'lucide-react';
+import { ArrowLeft, Building2, CalendarDays, Mail, MapPin, Phone, Users, Wallet } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
@@ -15,6 +16,7 @@ import { useTranslation } from '@/hooks/use-translation';
 
 type SupplierPurchaseItem = {
   id: string;
+  product_id: string | null;
   product_name: string | null;
   quantity: number;
   total: number;
@@ -59,7 +61,7 @@ type SupplierReturn = {
   purchase_return_items: SupplierReturnItem[] | null;
 };
 
-type ProfileTab = 'overview' | 'purchases' | 'payments' | 'returns';
+type ProfileTab = 'overview' | 'purchases' | 'products' | 'dues' | 'payments' | 'returns';
 
 type PageError = { message: string; code?: string };
 
@@ -100,7 +102,7 @@ export default function SupplierProfilePage() {
       fetchAllPages<SupplierPurchase>(async (from, to) => {
         const { data, error } = await supabase
           .from('purchases')
-          .select('id, po_number, purchase_date, total, paid_amount, due_amount, payment_status, status, purchase_items(id, product_name, quantity, total)')
+          .select('id, po_number, purchase_date, total, paid_amount, due_amount, payment_status, status, purchase_items(id, product_id, product_name, quantity, total)')
           .eq('supplier_id', supplierId)
           .order('purchase_date', { ascending: false })
           .order('id', { ascending: true })
@@ -173,10 +175,44 @@ export default function SupplierProfilePage() {
     () => purchases.filter((purchase) => purchase.status !== 'cancelled'),
     [purchases]
   );
+  const duePurchases = useMemo(
+    () => activePurchases.filter((purchase) => Number(purchase.due_amount || 0) > 0),
+    [activePurchases]
+  );
   const completedReturns = useMemo(
     () => returns.filter((returned) => returned.status === 'completed'),
     [returns]
   );
+  const productHistory = useMemo(() => {
+    const products = new Map<string, {
+      name: string;
+      quantity: number;
+      amount: number;
+      purchaseIds: Set<string>;
+      lastPurchase: string;
+    }>();
+    activePurchases.forEach((purchase) => (purchase.purchase_items || []).forEach((item) => {
+      const key = item.product_id || item.product_name || item.id;
+      const current = products.get(key);
+      if (current) {
+        current.quantity += Number(item.quantity || 0);
+        current.amount += Number(item.total || 0);
+        current.purchaseIds.add(purchase.id);
+        if (purchase.purchase_date > current.lastPurchase) current.lastPurchase = purchase.purchase_date;
+      } else {
+        products.set(key, {
+          name: item.product_name || '—',
+          quantity: Number(item.quantity || 0),
+          amount: Number(item.total || 0),
+          purchaseIds: new Set([purchase.id]),
+          lastPurchase: purchase.purchase_date,
+        });
+      }
+    }));
+    return Array.from(products.entries())
+      .map(([key, product]) => ({ key, ...product }))
+      .sort((left, right) => right.lastPurchase.localeCompare(left.lastPurchase));
+  }, [activePurchases]);
   const purchaseTotal = activePurchases.reduce((sum, purchase) => sum + Number(purchase.total || 0), 0);
   const purchasePaid = activePurchases.reduce((sum, purchase) => sum + Number(purchase.paid_amount || 0), 0);
   const purchaseDue = activePurchases.reduce((sum, purchase) => sum + Number(purchase.due_amount || 0), 0)
@@ -196,6 +232,8 @@ export default function SupplierProfilePage() {
   const profileTabs: Array<{ id: ProfileTab; label: string }> = [
     { id: 'overview', label: t('suppliers.profile.overview') },
     { id: 'purchases', label: t('suppliers.profile.purchaseHistory') },
+    { id: 'products', label: t('suppliers.profile.productHistory') },
+    { id: 'dues', label: t('suppliers.profile.dueManagement') },
     { id: 'payments', label: t('suppliers.profile.paymentHistory') },
     { id: 'returns', label: t('suppliers.profile.returns') },
   ];
@@ -226,12 +264,6 @@ export default function SupplierProfilePage() {
   }
 
   const details = [
-    { label: t('suppliers.companyName'), value: supplier.company_name },
-    { label: t('suppliers.contactPerson'), value: supplier.contact_person },
-    { label: t('common.phone'), value: supplier.phone },
-    { label: t('suppliers.alternatePhone'), value: supplier.alt_phone },
-    { label: t('common.email'), value: supplier.email },
-    { label: t('suppliers.address'), value: fullAddress },
     { label: t('suppliers.fatherName'), value: supplier.father_name },
     { label: t('suppliers.nidNumber'), value: supplier.nid_number },
     { label: t('suppliers.dateOfBirth'), value: supplier.date_of_birth ? dateText(supplier.date_of_birth) : null },
@@ -240,8 +272,6 @@ export default function SupplierProfilePage() {
     { label: t('suppliers.referralNote'), value: supplier.referral_note },
     { label: t('suppliers.note'), value: supplier.note },
     { label: t('suppliers.imageUrl'), value: supplier.image_url },
-    { label: t('suppliers.balance'), value: money(Number(supplier.balance || 0)) },
-    { label: t('suppliers.profile.status'), value: t(supplier.status === 'active' ? 'common.active' : 'common.inactive') },
   ].filter((detail) => Boolean(detail.value));
 
   const formatPaymentStatus = (purchase: SupplierPurchase) =>
@@ -259,9 +289,6 @@ export default function SupplierProfilePage() {
             <p className="text-sm text-muted-foreground">{t('suppliers.profile.subtitle')}</p>
           </div>
         </div>
-        <Badge variant="secondary" className={supplier.status === 'active' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : ''}>
-          {t(supplier.status === 'active' ? 'common.active' : 'common.inactive')}
-        </Badge>
       </div>
 
       <div className="flex gap-2 overflow-x-auto border-b pb-2" role="tablist" aria-label={t('suppliers.profile.supplierInformation')}>
@@ -290,32 +317,52 @@ export default function SupplierProfilePage() {
               <div className="min-w-0">
                 <h3 className="break-words text-lg font-semibold">{supplier.name}</h3>
                 {supplier.company_name && <p className="flex items-center gap-1 text-sm text-muted-foreground"><Building2 className="h-4 w-4" />{supplier.company_name}</p>}
+                <Badge variant="secondary" className={`mt-1 capitalize ${supplier.status === 'active' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : ''}`}>{t(supplier.status === 'active' ? 'common.active' : 'common.inactive')}</Badge>
               </div>
             </div>
-            <div className="grid gap-3 border-t pt-4 text-sm sm:grid-cols-2 lg:grid-cols-3">
-              {details.length === 0 ? (
-                <p className="text-muted-foreground">{t('suppliers.profile.noDetails')}</p>
-              ) : details.map((detail) => (
-                <div key={detail.label} className="min-w-0">
-                  <p className="text-xs text-muted-foreground">{detail.label}</p>
-                  <p className="break-words font-medium">{detail.value}</p>
-                </div>
-              ))}
-              {supplier.created_at && (
-                <div>
-                  <p className="text-xs text-muted-foreground">{t('suppliers.profile.createdAt')}</p>
-                  <p className="flex items-center gap-1 font-medium"><CalendarDays className="h-4 w-4 text-muted-foreground" />{dateText(supplier.created_at)}</p>
-                </div>
+            <Separator />
+            <div className="space-y-2 text-sm">
+              {supplier.contact_person && <p className="flex items-center gap-2"><Users className="h-4 w-4 text-muted-foreground" />{supplier.contact_person}</p>}
+              {supplier.phone && <p className="flex items-center gap-2"><Phone className="h-4 w-4 text-muted-foreground" />{supplier.phone}</p>}
+              {supplier.alt_phone && <p className="flex items-center gap-2"><Phone className="h-4 w-4 text-muted-foreground" />{supplier.alt_phone}</p>}
+              {supplier.email && <p className="flex items-center gap-2"><Mail className="h-4 w-4 text-muted-foreground" />{supplier.email}</p>}
+              {fullAddress && <p className="flex items-center gap-2"><MapPin className="h-4 w-4 text-muted-foreground" />{fullAddress}</p>}
+              {!supplier.contact_person && !supplier.phone && !supplier.alt_phone && !supplier.email && !fullAddress && (
+                <p className="text-muted-foreground">{t('suppliers.profile.noContact')}</p>
               )}
+            </div>
+            {(details.length > 0 || supplier.created_at) && <Separator />}
+            {(details.length > 0 || supplier.created_at) && (
+              <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+                {details.map((detail) => (
+                  <div key={detail.label} className="min-w-0">
+                    <p className="text-xs text-muted-foreground">{detail.label}</p>
+                    <p className="break-words font-bold">{detail.value}</p>
+                  </div>
+                ))}
+                {supplier.created_at && (
+                  <div>
+                    <p className="text-xs text-muted-foreground">{t('suppliers.profile.createdAt')}</p>
+                    <p className="flex items-center gap-1 font-bold"><CalendarDays className="h-4 w-4 text-muted-foreground" />{dateText(supplier.created_at)}</p>
+                  </div>
+                )}
+              </div>
+            )}
+            <Separator />
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div><p className="text-xs text-muted-foreground">{t('suppliers.previousDue')}</p><p className="font-bold">{money(Number(supplier.previous_due || 0))}</p></div>
+              <div><p className="text-xs text-muted-foreground">{t('suppliers.balance')}</p><p className="font-bold">{money(Number(supplier.balance || 0))}</p></div>
             </div>
           </Card>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
             {[
+              { label: t('suppliers.profile.purchaseOrders'), value: String(activePurchases.length) },
               { label: t('suppliers.totalPurchases'), value: money(purchaseTotal) },
               { label: t('suppliers.totalPaid'), value: money(totalPaid) },
               { label: t('suppliers.totalDue'), value: money(purchaseDue) },
               { label: t('suppliers.totalReturned'), value: money(returnTotal) },
+              { label: t('suppliers.profile.netPurchase'), value: money(Math.max(0, purchaseTotal - returnTotal)) },
               { label: t('suppliers.currentOutstanding'), value: money(currentOutstanding) },
               ...(supplierCredit > 0 ? [{ label: t('suppliers.creditBalance'), value: money(supplierCredit) }] : []),
               { label: t('suppliers.profile.lastPurchase'), value: activePurchases[0] ? dateText(activePurchases[0].purchase_date) : '—' },
@@ -362,6 +409,66 @@ export default function SupplierProfilePage() {
                     <TableCell className={Number(purchase.due_amount || 0) > 0 ? 'text-amber-600' : 'text-muted-foreground'}>{money(Number(purchase.due_amount || 0))}</TableCell>
                     <TableCell><Badge variant="outline" className="capitalize">{formatPaymentStatus(purchase)}</Badge></TableCell>
                     <TableCell><Badge variant={purchase.status === 'cancelled' ? 'destructive' : 'secondary'} className="capitalize">{purchase.status}</Badge></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </Card>
+      )}
+
+      {activeTab === 'products' && (
+        <Card className="overflow-hidden">
+          <div className="overflow-x-auto">
+            <Table className="min-w-[700px]">
+              <TableHeader><TableRow>
+                <TableHead>{t('suppliers.profile.product')}</TableHead>
+                <TableHead>{t('suppliers.profile.quantityPurchased')}</TableHead>
+                <TableHead>{t('suppliers.profile.purchaseAmount')}</TableHead>
+                <TableHead>{t('suppliers.profile.purchaseOrders')}</TableHead>
+                <TableHead>{t('suppliers.profile.lastPurchased')}</TableHead>
+              </TableRow></TableHeader>
+              <TableBody>
+                {productHistory.length === 0 ? (
+                  <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">{t('suppliers.profile.noProducts')}</TableCell></TableRow>
+                ) : productHistory.map((product) => (
+                  <TableRow key={product.key}>
+                    <TableCell className="font-medium">{product.name}</TableCell>
+                    <TableCell>{product.quantity}</TableCell>
+                    <TableCell>{money(product.amount)}</TableCell>
+                    <TableCell>{product.purchaseIds.size}</TableCell>
+                    <TableCell className="whitespace-nowrap">{dateText(product.lastPurchase)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </Card>
+      )}
+
+      {activeTab === 'dues' && (
+        <Card className="overflow-hidden">
+          <div className="overflow-x-auto">
+            <Table className="min-w-[700px]">
+              <TableHeader><TableRow>
+                <TableHead>{t('suppliers.profile.purchaseInvoice')}</TableHead>
+                <TableHead>{t('suppliers.profile.date')}</TableHead>
+                <TableHead>{t('suppliers.profile.originalAmount')}</TableHead>
+                <TableHead>{t('suppliers.profile.paid')}</TableHead>
+                <TableHead>{t('suppliers.profile.remainingDue')}</TableHead>
+                <TableHead>{t('suppliers.profile.paymentStatus')}</TableHead>
+              </TableRow></TableHeader>
+              <TableBody>
+                {duePurchases.length === 0 ? (
+                  <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{t('suppliers.profile.noDuePurchases')}</TableCell></TableRow>
+                ) : duePurchases.map((purchase) => (
+                  <TableRow key={purchase.id}>
+                    <TableCell className="font-medium">{purchase.po_number || '—'}</TableCell>
+                    <TableCell className="whitespace-nowrap">{dateText(purchase.purchase_date)}</TableCell>
+                    <TableCell>{money(Number(purchase.total || 0))}</TableCell>
+                    <TableCell className="text-emerald-600">{money(Number(purchase.paid_amount || 0))}</TableCell>
+                    <TableCell className="font-semibold text-amber-700">{money(Number(purchase.due_amount || 0))}</TableCell>
+                    <TableCell><Badge variant="outline" className="capitalize">{formatPaymentStatus(purchase)}</Badge></TableCell>
                   </TableRow>
                 ))}
               </TableBody>
