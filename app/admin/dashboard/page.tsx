@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
+import Link from 'next/link';
 import {
   DollarSign,
   ShoppingCart,
@@ -444,11 +445,11 @@ export default function DashboardPage() {
             </p>
           </div>
           <div className="flex gap-3">
-            <Button variant="secondary" className="bg-white/10 text-white hover:bg-white/20 border-0">
-              {t('dashboard.viewReports')}
+            <Button asChild variant="secondary" className="bg-white/10 text-white hover:bg-white/20 border-0">
+              <Link href="/admin/reports">{t('dashboard.viewReports')}</Link>
             </Button>
-            <Button className="bg-amber-500 text-slate-900 hover:bg-amber-400">
-              {t('dashboard.newSale')}
+            <Button asChild className="bg-amber-500 text-slate-900 hover:bg-amber-400">
+              <Link href="/admin/pos">{t('dashboard.newSale')}</Link>
             </Button>
           </div>
         </div>

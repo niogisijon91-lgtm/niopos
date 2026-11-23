@@ -7,6 +7,15 @@ type PendingSaleAttempt = {
   idempotencyKey: string;
 };
 
+export type HeldSaleSnapshot = {
+  cart: CartItem[];
+  customer: Customer | null;
+  discount: number;
+  paymentMethod: string;
+  paidAmount: number;
+  offerId: string | null;
+};
+
 export function calcLineDiscount(item: Pick<CartItem, 'price' | 'quantity' | 'discount_type' | 'discount_value'>): number {
   const lineSubtotal = item.price * item.quantity;
   const dtype = item.discount_type || 'percentage';
@@ -40,6 +49,7 @@ type POSState = {
   pendingSaleAttempt: PendingSaleAttempt | null;
   setAuthUserId: (userId: string | null) => void;
   addToCart: (product: Product) => void;
+  restoreHeldSale: (snapshot: HeldSaleSnapshot) => void;
   removeFromCart: (productId: string) => void;
   updateQuantity: (productId: string, quantity: number) => void;
   updateItemDiscount: (productId: string, discountType: 'percentage' | 'fixed', discountValue: number) => void;
@@ -122,6 +132,18 @@ export const usePOSStore = create<POSState>()(
           });
         }
       },
+
+      restoreHeldSale: (snapshot) =>
+        set({
+          cart: snapshot.cart.map((item) => ({ ...item })),
+          selectedCustomer: snapshot.customer,
+          selectedCustomerId: snapshot.customer?.id ?? null,
+          discount: snapshot.discount,
+          paymentMethod: snapshot.paymentMethod,
+          selectedOfferId: snapshot.offerId,
+          paidAmount: snapshot.paidAmount,
+          pendingSaleAttempt: null,
+        }),
 
       removeFromCart: (productId) =>
         set((state) => ({

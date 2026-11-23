@@ -29,6 +29,7 @@ import {
   Gift,
   ChevronDown,
   Loader2,
+  Camera,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -52,15 +53,68 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { usePOSStore, calcLineDiscount, calcLineTotal } from '@/store/pos-store';
+import { usePOSStore, calcLineDiscount, calcLineTotal, type HeldSaleSnapshot } from '@/store/pos-store';
 import { supabase } from '@/lib/supabase';
 import { isValidProductName } from '@/lib/product-name';
-import type { Product, Category, Customer, Settings } from '@/types';
+import type { CartItem, Product, Category, Customer, Settings } from '@/types';
 import { ThermalReceipt } from '@/components/thermal-receipt';
 import { fetchEligibleOffers, calculateOfferDiscount, formatOfferLabel, checkMinimumPurchase, type EligibleOffer } from '@/lib/discount';
 import { toast } from 'sonner';
 import { useTranslation } from '@/hooks/use-translation';
 import { useConfirmation } from '@/hooks/use-confirmation';
+import { POSCameraScanner } from '@/components/pos-camera-scanner';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isHeldCartItem(value: unknown): value is CartItem {
+  if (!isRecord(value)) return false;
+  return typeof value.product_id === 'string'
+    && typeof value.name === 'string'
+    && typeof value.price === 'number'
+    && Number.isFinite(value.price)
+    && value.price >= 0
+    && typeof value.quantity === 'number'
+    && Number.isFinite(value.quantity)
+    && value.quantity > 0
+    && typeof value.stock === 'number'
+    && Number.isFinite(value.stock)
+    && value.stock >= 0
+    && (value.discount_type === undefined || value.discount_type === 'percentage' || value.discount_type === 'fixed')
+    && (value.discount_value === undefined
+      || (typeof value.discount_value === 'number' && Number.isFinite(value.discount_value) && value.discount_value >= 0));
+}
+
+function parseHeldSaleSnapshot(orderData: unknown, invalidMessage: string): HeldSaleSnapshot {
+  if (!isRecord(orderData) || !Array.isArray(orderData.cart) || orderData.cart.length === 0 || !orderData.cart.every(isHeldCartItem)) {
+    throw new Error(invalidMessage);
+  }
+  const productIds = new Set<string>();
+  for (const item of orderData.cart) {
+    if (productIds.has(item.product_id)) throw new Error(invalidMessage);
+    productIds.add(item.product_id);
+  }
+
+  const customer = orderData.customer;
+  if (customer !== null && customer !== undefined
+    && (!isRecord(customer) || typeof customer.id !== 'string' || typeof customer.name !== 'string')) {
+    throw new Error(invalidMessage);
+  }
+
+  return {
+    cart: orderData.cart,
+    customer: customer == null ? null : customer as Customer,
+    discount: typeof orderData.discount === 'number' && Number.isFinite(orderData.discount) ? orderData.discount : 0,
+    paymentMethod: typeof orderData.paymentMethod === 'string' ? orderData.paymentMethod : 'cash',
+    paidAmount: typeof orderData.paidAmount === 'number' && Number.isFinite(orderData.paidAmount) ? orderData.paidAmount : 0,
+    offerId: typeof orderData.offerId === 'string' ? orderData.offerId : null,
+  };
+}
+
+function getHeldOrderItemCount(orderData: unknown): number {
+  return isRecord(orderData) && Array.isArray(orderData.cart) ? orderData.cart.length : 0;
+}
 
 const paymentMethods = [
   { id: 'cash', icon: Banknote },
@@ -84,6 +138,7 @@ export default function POSPage() {
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [lastInvoice, setLastInvoice] = useState<any>(null);
   const [barcodeInput, setBarcodeInput] = useState('');
+  const [cameraScannerOpen, setCameraScannerOpen] = useState(false);
   const [heldOrders, setHeldOrders] = useState<any[]>([]);
   const [heldOrdersOpen, setHeldOrdersOpen] = useState(false);
   const [addCustomerOpen, setAddCustomerOpen] = useState(false);
@@ -119,6 +174,7 @@ export default function POSPage() {
     selectedBrand: brandFilter,
     paidAmount,
     addToCart,
+    restoreHeldSale,
     removeFromCart,
     updateQuantity,
     updateItemDiscount,
@@ -317,60 +373,95 @@ export default function POSPage() {
     return matchesSearch && matchesCategory && matchesBrand;
   });
 
-  const handleBarcodeScan = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && barcodeInput) {
-        const product = products.find((p) => isValidProductName(p.name) && p.barcode === barcodeInput);
-        if (product) {
-          addToCart(product);
-          toast.success(t('pos.productAdded', { name: product.name }));
-          setBarcodeInput('');
-        } else {
-          toast.error(t('pos.barcodeNotFound'));
-        }
-      }
-    },
-    [barcodeInput, products, addToCart, t]
-  );
+  const processBarcode = useCallback((value: string) => {
+    const barcode = value.trim();
+    if (!barcode) return;
+    setBarcodeInput('');
+    setSearchQuery(barcode);
+
+    const normalizedBarcode = barcode.toLowerCase();
+    const product = products.find((item) =>
+      isValidProductName(item.name)
+      && (item.barcode?.trim().toLowerCase() === normalizedBarcode
+        || item.sku?.trim().toLowerCase() === normalizedBarcode)
+    );
+    if (!product) {
+      toast.error(t('pos.barcodeNotFound'));
+      return;
+    }
+
+    const cartItem = cart.find((item) => item.product_id === product.id);
+    if (product.stock <= 0 || (cartItem && cartItem.quantity >= product.stock)) {
+      toast.error(t('pos.productOutOfStock', { name: product.name }));
+      return;
+    }
+
+    addToCart(product);
+    toast.success(t('pos.productAdded', { name: product.name }));
+  }, [addToCart, cart, products, setSearchQuery, t]);
+
+  const handleBarcodeScan = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') processBarcode(barcodeInput);
+  }, [barcodeInput, processBarcode]);
+
+  const handleCameraBarcodeDetected = useCallback((barcode: string) => {
+    processBarcode(barcode);
+    setCameraScannerOpen(false);
+  }, [processBarcode]);
 
   const handleHoldOrder = async () => {
     if (cart.length === 0) {
       toast.error(t('pos.cartEmpty'));
       return;
     }
+    const snapshot: HeldSaleSnapshot = {
+      cart: cart.map((item) => ({ ...item })),
+      customer: selectedCustomer,
+      discount,
+      paymentMethod,
+      paidAmount,
+      offerId: selectedOfferId,
+    };
     const { error } = await supabase.from('held_orders').insert({
-      order_data: { cart, customer: selectedCustomer, discount, paymentMethod, paidAmount, offerId: selectedOfferId },
+      order_data: snapshot,
       customer_name: selectedCustomer?.name || 'Walk-in',
       status: 'held',
     });
-    if (!error) {
-      toast.success(t('pos.orderHeld'));
-      clearTransaction();
-      const { data } = await supabase.from('held_orders').select('*').eq('status', 'held').order('hold_time', { ascending: false });
-      setHeldOrders(data || []);
+    if (error) {
+      console.error('[POS] Failed to hold sale:', error);
+      toast.error(t('pos.holdFailed'));
+      return;
     }
+    toast.success(t('pos.orderHeld'));
+    clearTransaction();
+    const { data, error: loadError } = await supabase.from('held_orders').select('*').eq('status', 'held').order('hold_time', { ascending: false });
+    if (loadError) {
+      console.error('[POS] Failed to refresh held sales:', loadError);
+      toast.error(t('pos.heldOrdersLoadFailed'));
+      return;
+    }
+    setHeldOrders(data || []);
   };
 
   const retrieveHeldOrder = async (order: any) => {
     await confirmAction({
       title: 'Retrieve held order',
-      description: `Load the held order for ${order.customer_name || 'Walk-in'} into the current sale?`,
-      confirmLabel: 'Yes, Retrieve',
+      description: t('pos.retrieveHeldOrderConfirmation', { name: order.customer_name || 'Walk-in' }),
+      confirmLabel: t('pos.retrieve'),
       successMessage: t('pos.orderRetrieved'),
       action: async () => {
-        const { error } = await supabase.from('held_orders').update({ status: 'retrieved' }).eq('id', order.id);
+        const snapshot = parseHeldSaleSnapshot(order.order_data, t('pos.heldOrderInvalid'));
+        const { data: retrievedOrder, error } = await supabase
+          .from('held_orders')
+          .update({ status: 'retrieved' })
+          .eq('id', order.id)
+          .eq('status', 'held')
+          .select('id')
+          .maybeSingle();
         if (error) throw error;
-        const od = order.order_data;
-        if (od.cart) {
-          for (const item of od.cart) {
-            addToCart({ ...item, id: item.product_id, selling_price: item.price, cost_price: 0, stock: item.stock } as Product);
-          }
-        }
-        if (od.customer) setCustomer(od.customer);
-        if (typeof od.discount === 'number') setDiscount(od.discount);
-        if (od.paymentMethod) setPaymentMethod(od.paymentMethod);
-        if (typeof od.paidAmount === 'number') setPaidAmount(od.paidAmount);
-        if (typeof od.offerId === 'string') setSelectedOfferId(od.offerId);
+        if (!retrievedOrder) throw new Error(t('pos.heldOrderUnavailable'));
+        setSelectedOffer(null);
+        restoreHeldSale(snapshot);
         setHeldOrders((current) => current.filter((held) => held.id !== order.id));
         setHeldOrdersOpen(false);
       },
@@ -527,15 +618,27 @@ export default function POSPage() {
               className="h-10 pl-10"
             />
           </div>
-          <div className="relative min-w-[min(100%,180px)] flex-1 sm:flex-none">
-            <ScanLine className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              placeholder={t('pos.scanBarcode')}
-              value={barcodeInput}
-              onChange={(e) => setBarcodeInput(e.target.value)}
-              onKeyDown={handleBarcodeScan}
-              className="h-10 w-full pl-10 sm:w-44 xl:w-52"
-            />
+          <div className="flex min-w-[min(100%,180px)] flex-1 items-center gap-2 sm:flex-none">
+            <div className="relative min-w-0 flex-1">
+              <ScanLine className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder={t('pos.scanBarcode')}
+                value={barcodeInput}
+                onChange={(e) => setBarcodeInput(e.target.value)}
+                onKeyDown={handleBarcodeScan}
+                className="h-10 w-full pl-10 sm:w-44 xl:w-52"
+              />
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setCameraScannerOpen(true)}
+              className="h-10 shrink-0 px-2 sm:px-3"
+              aria-label={t('pos.cameraScan')}
+            >
+              <Camera className="h-4 w-4 sm:mr-2" />
+              <span className="hidden sm:inline">{t('pos.cameraScan')}</span>
+            </Button>
           </div>
           <Button variant="outline" onClick={() => setHeldOrdersOpen(true)} className="relative h-10 shrink-0 px-3">
             <Pause className="w-4 h-4 mr-1" /> {t('pos.held')}
@@ -1075,7 +1178,7 @@ export default function POSPage() {
               <Card key={order.id} className="p-3 flex items-center justify-between hover:bg-muted/50 cursor-pointer" onClick={() => retrieveHeldOrder(order)}>
                 <div>
                   <p className="font-medium text-sm">{order.customer_name || 'Walk-in'}</p>
-                  <p className="text-xs text-muted-foreground">{new Date(order.hold_time).toLocaleString(locale === 'bn' ? 'bn-BD' : 'en-US')} · {t('pos.itemsCount', { count: order.order_data?.cart?.length || 0 })}</p>
+                  <p className="text-xs text-muted-foreground">{new Date(order.hold_time).toLocaleString(locale === 'bn' ? 'bn-BD' : 'en-US')} · {t('pos.itemsCount', { count: getHeldOrderItemCount(order.order_data) })}</p>
                 </div>
                 <Button size="sm" variant="outline"><Play className="w-4 h-4 mr-1" /> {t('pos.retrieve')}</Button>
               </Card>
@@ -1098,6 +1201,11 @@ export default function POSPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <POSCameraScanner
+        open={cameraScannerOpen}
+        onOpenChange={setCameraScannerOpen}
+        onDetected={handleCameraBarcodeDetected}
+      />
       {printPortalReady && lastInvoice && storeSettings && createPortal(
         <ThermalReceipt
           sale={lastInvoice}
