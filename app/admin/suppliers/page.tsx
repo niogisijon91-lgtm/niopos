@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, Edit2, Trash2, Truck, Search, Mail, Phone, MapPin } from 'lucide-react';
+import { Plus, Edit2, Trash2, Truck, Search, Mail, Phone, MapPin, Upload } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,6 +19,7 @@ import type { Supplier } from '@/types';
 import { toast } from 'sonner';
 import { useTranslation } from '@/hooks/use-translation';
 import { useConfirmation } from '@/hooks/use-confirmation';
+import { GenericImportCSVDialog } from '@/components/generic-import-csv-dialog';
 
 export default function SuppliersPage() {
   const { t, locale } = useTranslation();
@@ -26,6 +27,7 @@ export default function SuppliersPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editing, setEditing] = useState<Supplier | null>(null);
   const [form, setForm] = useState({ name: '', contact_person: '', email: '', phone: '', address: '', city: '', country: '' });
   const { confirmUpdate, confirmDelete, dialog: confirmationDialog } = useConfirmation();
@@ -90,9 +92,12 @@ export default function SuppliersPage() {
           <h2 className="text-2xl font-bold font-heading">{t('suppliers.title')}</h2>
           <p className="text-sm text-muted-foreground">{t('suppliers.subtitle')}</p>
         </div>
-        <Button size="sm" className="bg-gradient-to-r from-slate-800 to-black" onClick={() => { setEditing(null); setForm({ name: '', contact_person: '', email: '', phone: '', address: '', city: '', country: '' }); setDialogOpen(true); }}>
-          <Plus className="w-4 h-4 mr-2" /> {t('suppliers.addSupplier')}
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}><Upload className="w-4 h-4 mr-2" /> Import CSV</Button>
+          <Button size="sm" className="bg-gradient-to-r from-slate-800 to-black" onClick={() => { setEditing(null); setForm({ name: '', contact_person: '', email: '', phone: '', address: '', city: '', country: '' }); setDialogOpen(true); }}>
+            <Plus className="w-4 h-4 mr-2" /> {t('suppliers.addSupplier')}
+          </Button>
+        </div>
       </div>
 
       <div className="relative max-w-sm">
@@ -156,6 +161,36 @@ export default function SuppliersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <GenericImportCSVDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title={t('suppliers.title')}
+        tableName="suppliers"
+        templateName="supplier-import-template.csv"
+        fields={[
+          { key: 'name', label: t('common.name'), aliases: ['name', 'supplier', 'supplier_name', 'supplier name', 'সাপ্লাইয়ার', 'সরবরাহকারী'], required: true },
+          { key: 'contact_person', label: t('suppliers.contactPerson'), aliases: ['contact_person', 'contact person', 'যোগাযোগকারী'] },
+          { key: 'email', label: t('common.email'), aliases: ['email', 'email_address', 'ইমেইল'] },
+          { key: 'phone', label: t('common.phone'), aliases: ['phone', 'mobile', 'phone_number', 'মোবাইল'] },
+          { key: 'address', label: t('common.address'), aliases: ['address', 'location', 'ঠিকানা'] },
+          { key: 'city', label: t('suppliers.city'), aliases: ['city', 'town', 'শহর'] },
+          { key: 'country', label: t('suppliers.country'), aliases: ['country', 'দেশ'] },
+          { key: 'status', label: t('common.status'), aliases: ['status', 'স্ট্যাটাস'] },
+        ]}
+        existingNames={suppliers.map((item) => item.name)}
+        preparePayload={async (values) => ({
+          name: values.name,
+          contact_person: values.contact_person || null,
+          email: values.email || null,
+          phone: values.phone || null,
+          address: values.address || null,
+          city: values.city || null,
+          country: values.country || null,
+          status: values.status?.toLowerCase() === 'inactive' ? 'inactive' : 'active',
+          balance: 0,
+        })}
+        onComplete={loadData}
+      />
       {confirmationDialog}
     </div>
   );

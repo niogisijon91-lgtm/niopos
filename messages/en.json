@@ -329,6 +329,15 @@
     "completed": "Import Completed",
     "totalRows": "Total Rows",
     "failedRows": "Failed Rows ({count})",
+    "generic": {
+      "title": "Import {name} CSV",
+      "instructions": "Select a UTF-8 or UTF-16 CSV file (maximum 10 MB)",
+      "sample": "Sample",
+      "missing": "Missing",
+      "import": "Import CSV",
+      "imported": "Imported {count} rows",
+      "failed": "Could not import {count} rows"
+    },
     "backToMapping": "Back to Mapping",
     "importProducts": "Import {count} Products",
     "downloadErrorReport": "Download Error Report",

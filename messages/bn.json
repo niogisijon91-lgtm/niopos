@@ -329,6 +329,15 @@
     "completed": "ইমপোর্ট সম্পন্ন",
     "totalRows": "মোট সারি",
     "failedRows": "ব্যর্থ সারি ({count})",
+    "generic": {
+      "title": "{name} CSV ইমপোর্ট",
+      "instructions": "UTF-8 বা UTF-16 CSV ফাইল নির্বাচন করুন (সর্বোচ্চ ১০ MB)",
+      "sample": "নমুনা",
+      "missing": "অনুপস্থিত",
+      "import": "CSV ইমপোর্ট করুন",
+      "imported": "{count}টি সারি ইমপোর্ট হয়েছে",
+      "failed": "{count}টি সারি ইমপোর্ট করা যায়নি"
+    },
     "backToMapping": "ম্যাপিংয়ে ফিরে যান",
     "importProducts": "{count}টি পণ্য ইমপোর্ট করুন",
     "downloadErrorReport": "ত্রুটির রিপোর্ট ডাউনলোড",

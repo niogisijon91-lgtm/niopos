@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import NextImage from 'next/image';
 import { motion } from 'framer-motion';
-import { Plus, Edit2, Trash2, Store, Search, Copy, Printer, Image as ImageIcon, X } from 'lucide-react';
+import { Plus, Edit2, Trash2, Store, Search, Copy, Printer, Image as ImageIcon, X, Upload } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,6 +21,7 @@ import type { Brand } from '@/types';
 import { toast } from 'sonner';
 import { useTranslation } from '@/hooks/use-translation';
 import { useConfirmation } from '@/hooks/use-confirmation';
+import { GenericImportCSVDialog } from '@/components/generic-import-csv-dialog';
 
 const PAGE_SIZE = 10;
 
@@ -39,6 +40,7 @@ export default function BrandsPage() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const { confirmUpdate, confirmDelete, dialog: confirmationDialog } = useConfirmation();
 
   useEffect(() => { loadData(); }, []);
@@ -175,6 +177,7 @@ export default function BrandsPage() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={exportCSV}><Copy className="w-4 h-4 mr-2" /> CSV</Button>
+          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}><Upload className="w-4 h-4 mr-2" /> Import CSV</Button>
           <Button variant="outline" size="sm" onClick={printBrands}><Printer className="w-4 h-4 mr-2" /> {t('common.print')}</Button>
           <Button size="sm" onClick={openNew} className="bg-indigo-600 hover:bg-indigo-700">
             <Plus className="w-4 h-4 mr-2" /> {t('brands.addBrand')}
@@ -309,6 +312,20 @@ export default function BrandsPage() {
         </DialogContent>
       </Dialog>
 
+      <GenericImportCSVDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title={t('brands.title')}
+        tableName="brands"
+        templateName="brand-import-template.csv"
+        fields={[
+          { key: 'name', label: t('brands.brandName'), aliases: ['name', 'brand', 'brand_name', 'brand name', 'ব্র্যান্ড'], required: true },
+          { key: 'description', label: t('common.description'), aliases: ['description', 'desc', 'বর্ণনা'] },
+          { key: 'status', label: t('common.status'), aliases: ['status', 'স্ট্যাটাস'] },
+        ]}
+        existingNames={brands.map((item) => item.name)}
+        onComplete={loadData}
+      />
       {confirmationDialog}
     </div>
   );

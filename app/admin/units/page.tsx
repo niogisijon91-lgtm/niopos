@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, Edit2, Trash2, Ruler, Search, Copy, FileSpreadsheet, Printer } from 'lucide-react';
+import { Plus, Edit2, Trash2, Ruler, Search, Copy, FileSpreadsheet, Printer, Upload } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,6 +20,7 @@ import type { Unit } from '@/types';
 import { toast } from 'sonner';
 import { useTranslation } from '@/hooks/use-translation';
 import { useConfirmation } from '@/hooks/use-confirmation';
+import { GenericImportCSVDialog } from '@/components/generic-import-csv-dialog';
 
 export default function UnitsPage() {
   const { t, locale } = useTranslation();
@@ -34,6 +35,7 @@ export default function UnitsPage() {
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState('active');
   const [saving, setSaving] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const { confirmUpdate, confirmDelete, dialog: confirmationDialog } = useConfirmation();
 
   useEffect(() => { loadData(); }, []);
@@ -148,6 +150,7 @@ export default function UnitsPage() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={exportCSV}><Copy className="w-4 h-4 mr-2" /> CSV</Button>
+          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}><Upload className="w-4 h-4 mr-2" /> Import CSV</Button>
           <Button variant="outline" size="sm" onClick={printUnits}><Printer className="w-4 h-4 mr-2" /> {t('common.print')}</Button>
           <Button size="sm" onClick={openNew} className="bg-indigo-600 hover:bg-indigo-700">
             <Plus className="w-4 h-4 mr-2" /> {t('units.addUnit')}
@@ -246,6 +249,21 @@ export default function UnitsPage() {
         </DialogContent>
       </Dialog>
 
+      <GenericImportCSVDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title={t('units.title')}
+        tableName="units"
+        templateName="unit-import-template.csv"
+        fields={[
+          { key: 'name', label: t('units.unitName'), aliases: ['name', 'unit', 'unit_name', 'unit name', 'ইউনিট'], required: true },
+          { key: 'short_name', label: t('units.shortName'), aliases: ['short_name', 'short name', 'abbreviation', 'সংক্ষিপ্ত নাম'], required: true },
+          { key: 'description', label: t('common.description'), aliases: ['description', 'desc', 'বর্ণনা'] },
+          { key: 'status', label: t('common.status'), aliases: ['status', 'স্ট্যাটাস'] },
+        ]}
+        existingNames={units.map((item) => item.name)}
+        onComplete={loadData}
+      />
       {confirmationDialog}
     </div>
   );

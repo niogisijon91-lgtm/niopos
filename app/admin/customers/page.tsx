@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, Edit2, Trash2, Users, Search, Mail, Phone, Award, Wallet, Eye } from 'lucide-react';
+import { Plus, Edit2, Trash2, Users, Search, Mail, Phone, Award, Wallet, Eye, Upload } from 'lucide-react';
 import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,6 +20,7 @@ import type { Customer } from '@/types';
 import { toast } from 'sonner';
 import { useTranslation } from '@/hooks/use-translation';
 import { useConfirmation } from '@/hooks/use-confirmation';
+import { GenericImportCSVDialog } from '@/components/generic-import-csv-dialog';
 
 export default function CustomersPage() {
   const { t, locale } = useTranslation();
@@ -27,6 +28,8 @@ export default function CustomersPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const importStoreId = useRef<string | null>(null);
   const [editing, setEditing] = useState<Customer | null>(null);
   const [form, setForm] = useState({ name: '', email: '', phone: '', address: '', membership: 'regular' });
   const { confirmUpdate, confirmDelete, dialog: confirmationDialog } = useConfirmation();
@@ -138,9 +141,12 @@ export default function CustomersPage() {
           <h2 className="text-2xl font-bold font-heading">{t('customers.title')}</h2>
           <p className="text-sm text-muted-foreground">{t('customers.subtitle')}</p>
         </div>
-        <Button size="sm" className="bg-gradient-to-r from-slate-800 to-black" onClick={() => { setEditing(null); setForm({ name: '', email: '', phone: '', address: '', membership: 'regular' }); setDialogOpen(true); }}>
-          <Plus className="w-4 h-4 mr-2" /> {t('customers.addCustomer')}
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}><Upload className="w-4 h-4 mr-2" /> Import CSV</Button>
+          <Button size="sm" className="bg-gradient-to-r from-slate-800 to-black" onClick={() => { setEditing(null); setForm({ name: '', email: '', phone: '', address: '', membership: 'regular' }); setDialogOpen(true); }}>
+            <Plus className="w-4 h-4 mr-2" /> {t('customers.addCustomer')}
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -242,6 +248,42 @@ export default function CustomersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <GenericImportCSVDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title={t('customers.title')}
+        tableName="customers"
+        templateName="customer-import-template.csv"
+        fields={[
+          { key: 'name', label: t('common.name'), aliases: ['name', 'customer_name', 'customer name', 'কাস্টমার', 'ক্রেতা'], required: true },
+          { key: 'email', label: t('common.email'), aliases: ['email', 'email_address', 'ইমেইল'] },
+          { key: 'phone', label: t('common.phone'), aliases: ['phone', 'mobile', 'phone_number', 'mobile number', 'মোবাইল'] },
+          { key: 'address', label: t('common.address'), aliases: ['address', 'location', 'ঠিকানা'] },
+          { key: 'membership', label: t('customers.membership'), aliases: ['membership', 'member_type', 'সদস্যতা'] },
+          { key: 'status', label: t('common.status'), aliases: ['status', 'স্ট্যাটাস'] },
+        ]}
+        existingNames={customers.map((item) => item.phone || '')}
+        duplicateField="phone"
+        preparePayload={async (values) => {
+          if (!importStoreId.current) {
+            const { data: storeId, error } = await supabase.rpc('get_my_store_id');
+            if (error || !storeId) throw new Error('Could not determine the current store');
+            importStoreId.current = storeId;
+          }
+          return {
+            name: values.name,
+            email: values.email || null,
+            phone: values.phone || null,
+            address: values.address || null,
+            membership: ['silver', 'gold'].includes(values.membership?.toLowerCase()) ? values.membership.toLowerCase() : 'regular',
+            status: values.status?.toLowerCase() === 'inactive' ? 'inactive' : 'active',
+            store_id: importStoreId.current,
+            reward_points: 0,
+            wallet_balance: 0,
+          };
+        }}
+        onComplete={loadData}
+      />
       {confirmationDialog}
     </div>
   );
