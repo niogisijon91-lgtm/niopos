@@ -78,7 +78,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
-    "minimatch": "^10.2.6",
-    "supabase": "^2.122.0"
+    "minimatch": "^11.0.9",
+    "supabase": "^2.122.1"
   }
 }
