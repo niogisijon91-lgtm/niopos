@@ -1,11 +1,18 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, Building2, CalendarDays, Mail, MapPin, Phone, Users, Wallet } from 'lucide-react';
+import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -36,9 +43,12 @@ type SupplierPurchase = {
 
 type SupplierPayment = {
   id: string;
+  purchase_id: string | null;
+  applied_to_previous_due: boolean;
   amount: number;
   payment_date: string;
   payment_method: string | null;
+  reference_number: string | null;
   note: string | null;
 };
 
@@ -64,6 +74,7 @@ type SupplierReturn = {
 type ProfileTab = 'overview' | 'purchases' | 'products' | 'dues' | 'payments' | 'returns';
 
 type PageError = { message: string; code?: string };
+type SelectedDue = { purchaseId: string | null; invoiceNumber: string; remainingDue: number };
 
 async function fetchAllPages<T>(
   loadPage: (from: number, to: number) => Promise<{ data: T[] | null; error: PageError | null }>
@@ -89,6 +100,17 @@ export default function SupplierProfilePage() {
   const [payments, setPayments] = useState<SupplierPayment[]>([]);
   const [returns, setReturns] = useState<SupplierReturn[]>([]);
   const [activeTab, setActiveTab] = useState<ProfileTab>('overview');
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [selectedDue, setSelectedDue] = useState<SelectedDue | null>(null);
+  const [paymentForm, setPaymentForm] = useState({
+    amount: '',
+    method: 'cash',
+    date: new Date().toISOString().slice(0, 10),
+    reference: '',
+    note: '',
+  });
+  const [processingPayment, setProcessingPayment] = useState(false);
+  const paymentIdempotencyKey = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -112,7 +134,7 @@ export default function SupplierProfilePage() {
       fetchAllPages<SupplierPayment>(async (from, to) => {
         const { data, error } = await supabase
           .from('supplier_payments')
-          .select('id, amount, payment_date, payment_method, note')
+          .select('id, purchase_id, applied_to_previous_due, amount, payment_date, payment_method, reference_number, note')
           .eq('supplier_id', supplierId)
           .order('payment_date', { ascending: false })
           .order('id', { ascending: true })
@@ -217,17 +239,89 @@ export default function SupplierProfilePage() {
   const purchasePaid = activePurchases.reduce((sum, purchase) => sum + Number(purchase.paid_amount || 0), 0);
   const purchaseDue = activePurchases.reduce((sum, purchase) => sum + Number(purchase.due_amount || 0), 0)
     + Number(supplier?.previous_due || 0);
-  const paymentTotal = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
-  const totalPaid = purchasePaid + paymentTotal;
+  const unallocatedPaymentTotal = payments
+    .filter((payment) => !payment.purchase_id)
+    .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  const previousDuePaid = payments
+    .filter((payment) => payment.applied_to_previous_due)
+    .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  const totalPaid = purchasePaid + unallocatedPaymentTotal;
   const returnTotal = completedReturns.reduce((sum, returned) => sum + Number(returned.total || 0), 0);
-  const netBalance = purchaseDue - paymentTotal;
+  const netBalance = purchaseDue - unallocatedPaymentTotal;
   const currentOutstanding = Math.max(0, netBalance);
   const supplierCredit = Math.max(0, -netBalance);
+  const previousDueRemaining = Math.max(
+    0,
+    Number(supplier?.previous_due || 0) - previousDuePaid
+  );
   const purchaseInvoiceById = useMemo(
     () => new Map(purchases.map((purchase) => [purchase.id, purchase.po_number || '—'])),
     [purchases]
   );
   const fullAddress = [supplier?.address, supplier?.city, supplier?.country].filter(Boolean).join(', ');
+  const paymentMethods = [
+    { value: 'cash', label: t('suppliers.profile.cash') },
+    { value: 'card', label: t('suppliers.profile.card') },
+    { value: 'mobile', label: t('suppliers.profile.mobile') },
+    { value: 'bank', label: t('suppliers.profile.bank') },
+  ];
+
+  const openDuePayment = (due: SelectedDue) => {
+    const retryingSamePayment = paymentIdempotencyKey.current
+      && selectedDue?.purchaseId === due.purchaseId;
+    if (!retryingSamePayment) {
+      paymentIdempotencyKey.current = null;
+      setSelectedDue(due);
+      setPaymentForm({
+        amount: String(due.remainingDue),
+        method: 'cash',
+        date: new Date().toISOString().slice(0, 10),
+        reference: '',
+        note: '',
+      });
+    }
+    setPaymentOpen(true);
+  };
+
+  const collectDuePayment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!supplier || !selectedDue || processingPayment) return;
+
+    const amount = Number(paymentForm.amount);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > selectedDue.remainingDue) {
+      toast.error(`${t('suppliers.profile.invalidPaymentAmount')} ${money(selectedDue.remainingDue)}`);
+      return;
+    }
+
+    setProcessingPayment(true);
+    paymentIdempotencyKey.current ||= crypto.randomUUID();
+    try {
+      const { data, error } = await supabase.rpc('collect_supplier_due_payment', {
+        p_supplier_id: supplier.id,
+        p_purchase_id: selectedDue.purchaseId,
+        p_amount: amount,
+        p_payment_method: paymentForm.method,
+        p_payment_date: paymentForm.date,
+        p_reference_number: paymentForm.reference.trim() || null,
+        p_note: paymentForm.note.trim() || null,
+        p_idempotency_key: paymentIdempotencyKey.current,
+      });
+      if (error) throw error;
+      if (!data) throw new Error('Payment could not be recorded');
+
+      paymentIdempotencyKey.current = null;
+      setPaymentOpen(false);
+      setSelectedDue(null);
+      toast.success(t('suppliers.profile.paymentSuccess'));
+      await loadData();
+    } catch (error) {
+      console.error('Could not record supplier due payment', error);
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(`${t('suppliers.profile.paymentFailed')}: ${message}`);
+    } finally {
+      setProcessingPayment(false);
+    }
+  };
 
   const profileTabs: Array<{ id: ProfileTab; label: string }> = [
     { id: 'overview', label: t('suppliers.profile.overview') },
@@ -447,34 +541,148 @@ export default function SupplierProfilePage() {
       )}
 
       {activeTab === 'dues' && (
-        <Card className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <Table className="min-w-[700px]">
-              <TableHeader><TableRow>
-                <TableHead>{t('suppliers.profile.purchaseInvoice')}</TableHead>
-                <TableHead>{t('suppliers.profile.date')}</TableHead>
-                <TableHead>{t('suppliers.profile.originalAmount')}</TableHead>
-                <TableHead>{t('suppliers.profile.paid')}</TableHead>
-                <TableHead>{t('suppliers.profile.remainingDue')}</TableHead>
-                <TableHead>{t('suppliers.profile.paymentStatus')}</TableHead>
-              </TableRow></TableHeader>
-              <TableBody>
-                {duePurchases.length === 0 ? (
-                  <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{t('suppliers.profile.noDuePurchases')}</TableCell></TableRow>
-                ) : duePurchases.map((purchase) => (
-                  <TableRow key={purchase.id}>
-                    <TableCell className="font-medium">{purchase.po_number || '—'}</TableCell>
-                    <TableCell className="whitespace-nowrap">{dateText(purchase.purchase_date)}</TableCell>
-                    <TableCell>{money(Number(purchase.total || 0))}</TableCell>
-                    <TableCell className="text-emerald-600">{money(Number(purchase.paid_amount || 0))}</TableCell>
-                    <TableCell className="font-semibold text-amber-700">{money(Number(purchase.due_amount || 0))}</TableCell>
-                    <TableCell><Badge variant="outline" className="capitalize">{formatPaymentStatus(purchase)}</Badge></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </Card>
+        <>
+          <Card className="overflow-hidden">
+            <div className="overflow-x-auto">
+              <Table className="min-w-[800px]">
+                <TableHeader><TableRow>
+                  <TableHead>{t('suppliers.profile.purchaseInvoice')}</TableHead>
+                  <TableHead>{t('suppliers.profile.date')}</TableHead>
+                  <TableHead>{t('suppliers.profile.originalAmount')}</TableHead>
+                  <TableHead>{t('suppliers.profile.paid')}</TableHead>
+                  <TableHead>{t('suppliers.profile.remainingDue')}</TableHead>
+                  <TableHead>{t('suppliers.profile.paymentStatus')}</TableHead>
+                  <TableHead>{t('suppliers.profile.action')}</TableHead>
+                </TableRow></TableHeader>
+                <TableBody>
+                  {previousDueRemaining > 0 && (
+                    <TableRow key="previous-due">
+                      <TableCell className="font-medium">{t('suppliers.previousDue')}</TableCell>
+                      <TableCell>—</TableCell>
+                      <TableCell>{money(Number(supplier.previous_due || 0))}</TableCell>
+                      <TableCell className="text-emerald-600">{money(previousDuePaid)}</TableCell>
+                      <TableCell className="font-semibold text-amber-700">{money(previousDueRemaining)}</TableCell>
+                      <TableCell><Badge variant="outline">{t('suppliers.profile.due')}</Badge></TableCell>
+                      <TableCell>
+                        <Button
+                          size="sm"
+                          onClick={() => openDuePayment({
+                            purchaseId: null,
+                            invoiceNumber: t('suppliers.previousDue'),
+                            remainingDue: previousDueRemaining,
+                          })}
+                        >
+                          <Wallet className="mr-1 h-4 w-4" />{t('suppliers.profile.pay')}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {duePurchases.length === 0 && previousDueRemaining === 0 ? (
+                    <TableRow><TableCell colSpan={7} className="py-8 text-center text-muted-foreground">{t('suppliers.profile.noDuePurchases')}</TableCell></TableRow>
+                  ) : duePurchases.map((purchase) => (
+                    <TableRow key={purchase.id}>
+                      <TableCell className="font-medium">{purchase.po_number || '—'}</TableCell>
+                      <TableCell className="whitespace-nowrap">{dateText(purchase.purchase_date)}</TableCell>
+                      <TableCell>{money(Number(purchase.total || 0))}</TableCell>
+                      <TableCell className="text-emerald-600">{money(Number(purchase.paid_amount || 0))}</TableCell>
+                      <TableCell className="font-semibold text-amber-700">{money(Number(purchase.due_amount || 0))}</TableCell>
+                      <TableCell><Badge variant="outline" className="capitalize">{formatPaymentStatus(purchase)}</Badge></TableCell>
+                      <TableCell>
+                        <Button
+                          size="sm"
+                          onClick={() => openDuePayment({
+                            purchaseId: purchase.id,
+                            invoiceNumber: purchase.po_number || '—',
+                            remainingDue: Number(purchase.due_amount || 0),
+                          })}
+                        >
+                          <Wallet className="mr-1 h-4 w-4" />{t('suppliers.profile.pay')}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </Card>
+          <Dialog
+            open={paymentOpen}
+            onOpenChange={(open) => {
+              if (!processingPayment) setPaymentOpen(open);
+            }}
+          >
+            <DialogContent>
+              <DialogHeader><DialogTitle>{t('suppliers.profile.paymentDialogTitle')}</DialogTitle></DialogHeader>
+              {selectedDue && (
+                <form id="supplier-due-payment-form" onSubmit={(event) => void collectDuePayment(event)} className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    {selectedDue.invoiceNumber} · {t('suppliers.profile.remainingDue')}: {money(selectedDue.remainingDue)}
+                  </p>
+                  <div className="space-y-2">
+                    <Label htmlFor="supplier-payment-amount">{t('suppliers.profile.amount')}</Label>
+                    <Input
+                      id="supplier-payment-amount"
+                      type="number"
+                      min="0.01"
+                      max={selectedDue.remainingDue}
+                      step="0.01"
+                      required
+                      value={paymentForm.amount}
+                      onChange={(event) => setPaymentForm({ ...paymentForm, amount: event.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="supplier-payment-method">{t('suppliers.profile.method')}</Label>
+                    <select
+                      id="supplier-payment-method"
+                      className="h-10 w-full rounded-md border bg-background px-3"
+                      value={paymentForm.method}
+                      onChange={(event) => setPaymentForm({ ...paymentForm, method: event.target.value })}
+                    >
+                      {paymentMethods.map((method) => <option key={method.value} value={method.value}>{method.label}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="supplier-payment-date">{t('suppliers.profile.date')}</Label>
+                    <Input
+                      id="supplier-payment-date"
+                      type="date"
+                      required
+                      value={paymentForm.date}
+                      onChange={(event) => setPaymentForm({ ...paymentForm, date: event.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="supplier-payment-reference">{t('suppliers.profile.referenceNumber')}</Label>
+                    <Input
+                      id="supplier-payment-reference"
+                      maxLength={120}
+                      value={paymentForm.reference}
+                      onChange={(event) => setPaymentForm({ ...paymentForm, reference: event.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="supplier-payment-note">{t('suppliers.profile.notes')}</Label>
+                    <Input
+                      id="supplier-payment-note"
+                      maxLength={1000}
+                      value={paymentForm.note}
+                      onChange={(event) => setPaymentForm({ ...paymentForm, note: event.target.value })}
+                    />
+                  </div>
+                </form>
+              )}
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setPaymentOpen(false)} disabled={processingPayment}>
+                  {t('suppliers.profile.cancel')}
+                </Button>
+                <Button type="submit" form="supplier-due-payment-form" disabled={processingPayment}>
+                  {processingPayment ? t('suppliers.profile.processingPayment') : t('suppliers.profile.confirmPayment')}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </>
       )}
 
       {activeTab === 'payments' && (
@@ -483,19 +691,25 @@ export default function SupplierProfilePage() {
             <Table className="min-w-[650px]">
               <TableHeader><TableRow>
                 <TableHead>{t('suppliers.profile.date')}</TableHead>
+                <TableHead>{t('suppliers.profile.purchaseInvoice')}</TableHead>
                 <TableHead>{t('suppliers.profile.amount')}</TableHead>
                 <TableHead>{t('suppliers.profile.method')}</TableHead>
                 <TableHead>{t('suppliers.profile.reference')}</TableHead>
               </TableRow></TableHeader>
               <TableBody>
                 {payments.length === 0 ? (
-                  <TableRow><TableCell colSpan={4} className="py-8 text-center text-muted-foreground">{t('suppliers.profile.noPayments')}</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">{t('suppliers.profile.noPayments')}</TableCell></TableRow>
                 ) : payments.map((payment) => (
                   <TableRow key={payment.id}>
                     <TableCell className="whitespace-nowrap">{dateText(payment.payment_date)}</TableCell>
+                    <TableCell>
+                      {payment.purchase_id
+                        ? purchaseInvoiceById.get(payment.purchase_id) || '—'
+                        : payment.applied_to_previous_due ? t('suppliers.previousDue') : '—'}
+                    </TableCell>
                     <TableCell className="font-medium text-emerald-600">{money(Number(payment.amount || 0))}</TableCell>
                     <TableCell className="capitalize">{payment.payment_method || '—'}</TableCell>
-                    <TableCell className="max-w-[320px] whitespace-normal">{payment.note || '—'}</TableCell>
+                    <TableCell className="max-w-[320px] whitespace-normal">{[payment.reference_number, payment.note].filter(Boolean).join(' · ') || '—'}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
