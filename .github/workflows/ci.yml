@@ -44,5 +44,5 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-not-a-credential
+          NEXT_PUBLIC_SUPABASE_URL: https://jlujbzfyobfskfepjkdt.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpsdWpiemZ5b2Jmc2tmZXBqa2R0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0NzQ2ODEsImV4cCI6MjEwNzA1MDY4MX0.iGtL_MErisl3NAReD9wKyte1v_fLcPyuEDfLzb0YAjw
