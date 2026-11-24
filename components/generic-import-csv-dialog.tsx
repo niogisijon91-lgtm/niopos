@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { toast } from 'sonner';
-import { decodeCSVBuffer, CsvEncodingError, parseCSV, downloadFile } from '@/lib/csv-import';
+import { decodeCSVBuffer, CsvEncodingError, CsvParseError, parseCSV, downloadFile } from '@/lib/csv-import';
+import { hasMissingRequiredCsvValues } from '@/lib/csv-validation';
 import { escapeCsvCell } from '@/lib/safe-export';
 import { supabase } from '@/lib/supabase';
 import { useTranslation } from '@/hooks/use-translation';
@@ -87,18 +88,20 @@ export function GenericImportCSVDialog({
     try {
       const text = decodeCSVBuffer(await file.arrayBuffer());
       const parsed = parseCSV(text);
-      if (parsed.headers.length === 0 || parsed.rows.length === 0) {
+      const nonEmptyRows = parsed.rows.filter((row) => row.some((value) => value.trim()));
+      if (parsed.headers.length === 0 || nonEmptyRows.length === 0) {
         toast.error(t('csvImport.emptyFile'));
         return;
       }
       setFileName(file.name);
       setHeaders(parsed.headers);
-      setRows(parsed.rows.filter((row) => row.some((value) => value.trim())));
+      setRows(nonEmptyRows);
       const mapped = autoMap(parsed.headers);
       setMapping(mapped);
       setStep(parsed.headers.some((_, index) => !mapped[index]) ? 'mapping' : 'preview');
     } catch (error) {
       if (error instanceof CsvEncodingError) toast.error(t('csvImport.invalidEncoding'));
+      else if (error instanceof CsvParseError) toast.error(t('csvImport.malformedFile'));
       else {
         console.error(`[${tableName}] Could not read CSV:`, error);
         toast.error(t('csvImport.readFailed'));
@@ -145,7 +148,7 @@ export function GenericImportCSVDialog({
     try {
       for (const row of rows) {
         const values = getValues(row);
-        if (!values.name?.trim()) {
+        if (!values.name?.trim() || hasMissingRequiredCsvValues(fields, values)) {
           skippedCount += 1;
           continue;
         }

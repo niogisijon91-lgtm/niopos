@@ -38,6 +38,7 @@ import { supabase } from '@/lib/supabase';
 import type { Category, Product, StockMovement } from '@/types';
 import { toast } from 'sonner';
 import { useTranslation } from '@/hooks/use-translation';
+import { getStockMovementDirection } from '@/lib/stock-display';
 
 type StockDirection = 'in' | 'out';
 type StockFilter = 'all' | 'in_stock' | 'low_stock' | 'out_of_stock';
@@ -642,8 +643,13 @@ function MovementTable({
         </TableHeader>
         <TableBody>
           {movements.map((movement) => {
-            const isIncrease = movement.type === 'in';
-            const isDecrease = movement.type === 'out';
+            const direction = getStockMovementDirection(
+              movement.type,
+              movement.previous_stock,
+              movement.new_stock
+            );
+            const isIncrease = direction === 'in';
+            const isDecrease = direction === 'out';
             return (
               <TableRow key={movement.id}>
                 <TableCell className="font-medium">{movement.products?.name || t('inventory.unknown')}</TableCell>

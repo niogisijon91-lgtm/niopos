@@ -63,6 +63,7 @@ import { toast } from 'sonner';
 import { useTranslation } from '@/hooks/use-translation';
 import { useConfirmation } from '@/hooks/use-confirmation';
 import { POSCameraScanner } from '@/components/pos-camera-scanner';
+import { findPOSProductByBarcode } from '@/lib/pos-barcode';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -379,11 +380,9 @@ export default function POSPage() {
     setBarcodeInput('');
     setSearchQuery(barcode);
 
-    const normalizedBarcode = barcode.toLowerCase();
-    const product = products.find((item) =>
-      isValidProductName(item.name)
-      && (item.barcode?.trim().toLowerCase() === normalizedBarcode
-        || item.sku?.trim().toLowerCase() === normalizedBarcode)
+    const product = findPOSProductByBarcode(
+      products.filter((item) => isValidProductName(item.name)),
+      barcode
     );
     if (!product) {
       toast.error(t('pos.barcodeNotFound'));

@@ -131,7 +131,7 @@ export default function SuppliersPage() {
           { label: t('suppliers.totalSuppliers'), value: suppliers.length, icon: Users, color: 'from-slate-800 to-black' },
           { label: t('suppliers.activeSuppliers'), value: suppliers.filter((supplier) => supplier.status === 'active').length, icon: Truck, color: 'from-emerald-500 to-teal-600' },
           { label: t('suppliers.totalPurchases'), value: formatMoney(suppliers.reduce((sum, supplier) => sum + Number(supplier.total_buy || 0), 0)), icon: Wallet, color: 'from-blue-500 to-cyan-600' },
-          { label: t('suppliers.totalDue'), value: formatMoney(suppliers.reduce((sum, supplier) => sum + Number(supplier.total_due || 0) + Number(supplier.previous_due || 0), 0)), icon: Wallet, color: 'from-amber-500 to-orange-600' },
+          { label: t('suppliers.totalDue'), value: formatMoney(suppliers.reduce((sum, supplier) => sum + Number(supplier.total_due || 0), 0)), icon: Wallet, color: 'from-amber-500 to-orange-600' },
         ].map((stat, index) => (
           <motion.div key={stat.label} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }}>
             <Card className="p-4">
@@ -187,8 +187,8 @@ export default function SuppliersPage() {
                   </TableCell>
                   <TableCell className="font-medium">{formatMoney(Number(supplier.total_buy || 0))}</TableCell>
                   <TableCell className="font-medium text-emerald-600">{formatMoney(Number(supplier.total_paid || 0))}</TableCell>
-                  <TableCell className={Number(supplier.total_due || 0) + Number(supplier.previous_due || 0) > 0 ? 'font-medium text-amber-600' : 'text-muted-foreground'}>
-                    {formatMoney(Number(supplier.total_due || 0) + Number(supplier.previous_due || 0))}
+                  <TableCell className={Number(supplier.total_due || 0) > 0 ? 'font-medium text-amber-600' : 'text-muted-foreground'}>
+                    {formatMoney(Number(supplier.total_due || 0))}
                   </TableCell>
                   <TableCell><Badge variant="secondary" className={supplier.status === 'active' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : ''}>{t(supplier.status === 'active' ? 'common.active' : 'common.inactive')}</Badge></TableCell>
                   <TableCell className="text-right">

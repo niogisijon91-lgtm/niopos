@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/pos-held-sale.test.mjs"
+    "test": "node --test tests/pos-held-sale.test.mjs tests/stock-display.test.mjs tests/pos-camera-session.test.mjs tests/csv-parser.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

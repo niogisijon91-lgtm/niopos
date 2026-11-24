@@ -10,6 +10,7 @@ const localStorage = {
 };
 globalThis.window = { localStorage };
 const { calcLineDiscount, calcLineTotal, usePOSStore } = await import('../store/pos-store.ts');
+const { findPOSProductByBarcode } = await import('../lib/pos-barcode.ts');
 
 test('restores a multi-product held sale without changing quantities, prices, discounts, or totals', () => {
   const cart = [
@@ -106,4 +107,29 @@ test('restores a single held item instead of incrementing it in the current cart
   assert.equal(state.cart[0].quantity, 5);
   assert.equal(calcLineDiscount(state.cart[0]), 2.5);
   assert.equal(state.getSubtotal(), 10);
+});
+
+test('finds a scanned barcode or SKU and adds exactly one matching product to the cart', () => {
+  const product = {
+    id: 'coffee-1',
+    name: 'Coffee',
+    sku: 'COF-1',
+    barcode: 'AbC123',
+    selling_price: 8,
+    discount_price: null,
+    stock: 10,
+    image_url: null,
+  };
+
+  assert.equal(findPOSProductByBarcode([product], ' abc123 '), product);
+  assert.equal(findPOSProductByBarcode([product], ' cof-1 '), product);
+
+  usePOSStore.getState().clearCart();
+  const match = findPOSProductByBarcode([product], 'ABC123');
+  usePOSStore.getState().addToCart(match);
+
+  const state = usePOSStore.getState();
+  assert.equal(state.cart.length, 1);
+  assert.equal(state.cart[0].product_id, product.id);
+  assert.equal(state.cart[0].quantity, 1);
 });

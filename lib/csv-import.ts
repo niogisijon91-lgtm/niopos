@@ -1,6 +1,7 @@
 import type { Category, Brand, Unit } from '@/types';
 import { isValidProductName } from '@/lib/product-name';
 import { escapeCsvCell } from '@/lib/safe-export';
+export { CsvParseError, parseCSV } from '@/lib/csv-parser';
 
 export type ImportField =
   | 'name' | 'product_code' | 'barcode' | 'sku' | 'product_type'
@@ -117,58 +118,6 @@ export function decodeCSVBuffer(buffer: ArrayBuffer): string {
 
   if (text.includes('\0')) throw new CsvEncodingError();
   return text;
-}
-
-export function parseCSV(text: string): { headers: string[]; rows: string[][] } {
-  const cleaned = text.replace(/^\uFEFF/, '');
-  const lines: string[] = [];
-  let current = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < cleaned.length; i++) {
-    const ch = cleaned[i];
-    if (ch === '"') {
-      if (inQuotes && cleaned[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
-      if (ch === '\r' && cleaned[i + 1] === '\n') i++;
-      lines.push(current);
-      current = '';
-    } else {
-      current += ch;
-    }
-  }
-  if (current) lines.push(current);
-
-  if (lines.length === 0) return { headers: [], rows: [] };
-
-  const splitLine = (line: string): string[] => {
-    const fields: string[] = [];
-    let field = '';
-    let inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        if (inQ && line[i + 1] === '"') { field += '"'; i++; }
-        else inQ = !inQ;
-      } else if (ch === ',' && !inQ) {
-        fields.push(field);
-        field = '';
-      } else {
-        field += ch;
-      }
-    }
-    fields.push(field);
-    return fields.map((f) => f.trim());
-  };
-
-  const headers = splitLine(lines[0]);
-  const rows = lines.slice(1).filter((l) => l.trim()).map(splitLine);
-  return { headers, rows };
 }
 
 export function autoMapColumns(headers: string[]): ColumnMapping {

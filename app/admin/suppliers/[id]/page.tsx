@@ -76,6 +76,11 @@ type ProfileTab = 'overview' | 'purchases' | 'products' | 'dues' | 'payments' | 
 type PageError = { message: string; code?: string };
 type SelectedDue = { purchaseId: string | null; invoiceNumber: string; remainingDue: number };
 
+function getLocalDateInputValue() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+}
+
 async function fetchAllPages<T>(
   loadPage: (from: number, to: number) => Promise<{ data: T[] | null; error: PageError | null }>
 ): Promise<{ data: T[] | null; error: PageError | null }> {
@@ -105,11 +110,12 @@ export default function SupplierProfilePage() {
   const [paymentForm, setPaymentForm] = useState({
     amount: '',
     method: 'cash',
-    date: new Date().toISOString().slice(0, 10),
+    date: getLocalDateInputValue(),
     reference: '',
     note: '',
   });
   const [processingPayment, setProcessingPayment] = useState(false);
+  const [paymentRetryRequired, setPaymentRetryRequired] = useState(false);
   const paymentIdempotencyKey = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -237,8 +243,7 @@ export default function SupplierProfilePage() {
   }, [activePurchases]);
   const purchaseTotal = activePurchases.reduce((sum, purchase) => sum + Number(purchase.total || 0), 0);
   const purchasePaid = activePurchases.reduce((sum, purchase) => sum + Number(purchase.paid_amount || 0), 0);
-  const purchaseDue = activePurchases.reduce((sum, purchase) => sum + Number(purchase.due_amount || 0), 0)
-    + Number(supplier?.previous_due || 0);
+  const invoiceDue = activePurchases.reduce((sum, purchase) => sum + Number(purchase.due_amount || 0), 0);
   const unallocatedPaymentTotal = payments
     .filter((payment) => !payment.purchase_id)
     .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
@@ -247,13 +252,17 @@ export default function SupplierProfilePage() {
     .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
   const totalPaid = purchasePaid + unallocatedPaymentTotal;
   const returnTotal = completedReturns.reduce((sum, returned) => sum + Number(returned.total || 0), 0);
-  const netBalance = purchaseDue - unallocatedPaymentTotal;
-  const currentOutstanding = Math.max(0, netBalance);
-  const supplierCredit = Math.max(0, -netBalance);
   const previousDueRemaining = Math.max(
     0,
     Number(supplier?.previous_due || 0) - previousDuePaid
   );
+  const purchaseDue = invoiceDue + previousDueRemaining;
+  const otherUnallocatedPayments = payments
+    .filter((payment) => !payment.purchase_id && !payment.applied_to_previous_due)
+    .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  const netBalance = purchaseDue - otherUnallocatedPayments;
+  const currentOutstanding = Math.max(0, netBalance);
+  const supplierCredit = Math.max(0, -netBalance);
   const purchaseInvoiceById = useMemo(
     () => new Map(purchases.map((purchase) => [purchase.id, purchase.po_number || '—'])),
     [purchases]
@@ -275,10 +284,11 @@ export default function SupplierProfilePage() {
       setPaymentForm({
         amount: String(due.remainingDue),
         method: 'cash',
-        date: new Date().toISOString().slice(0, 10),
+        date: getLocalDateInputValue(),
         reference: '',
         note: '',
       });
+      setPaymentRetryRequired(false);
     }
     setPaymentOpen(true);
   };
@@ -310,17 +320,28 @@ export default function SupplierProfilePage() {
       if (!data) throw new Error('Payment could not be recorded');
 
       paymentIdempotencyKey.current = null;
+      setPaymentRetryRequired(false);
       setPaymentOpen(false);
       setSelectedDue(null);
       toast.success(t('suppliers.profile.paymentSuccess'));
       await loadData();
     } catch (error) {
+      setPaymentRetryRequired(true);
       console.error('Could not record supplier due payment', error);
       const message = error instanceof Error ? error.message : String(error);
       toast.error(`${t('suppliers.profile.paymentFailed')}: ${message}`);
     } finally {
       setProcessingPayment(false);
     }
+  };
+
+  const cancelDuePayment = () => {
+    const refreshBalances = Boolean(paymentIdempotencyKey.current);
+    paymentIdempotencyKey.current = null;
+    setPaymentRetryRequired(false);
+    setPaymentOpen(false);
+    setSelectedDue(null);
+    if (refreshBalances) void loadData();
   };
 
   const profileTabs: Array<{ id: ProfileTab; label: string }> = [
@@ -628,6 +649,7 @@ export default function SupplierProfilePage() {
                       step="0.01"
                       required
                       value={paymentForm.amount}
+                      disabled={processingPayment || paymentRetryRequired}
                       onChange={(event) => setPaymentForm({ ...paymentForm, amount: event.target.value })}
                     />
                   </div>
@@ -637,6 +659,7 @@ export default function SupplierProfilePage() {
                       id="supplier-payment-method"
                       className="h-10 w-full rounded-md border bg-background px-3"
                       value={paymentForm.method}
+                      disabled={processingPayment || paymentRetryRequired}
                       onChange={(event) => setPaymentForm({ ...paymentForm, method: event.target.value })}
                     >
                       {paymentMethods.map((method) => <option key={method.value} value={method.value}>{method.label}</option>)}
@@ -649,6 +672,7 @@ export default function SupplierProfilePage() {
                       type="date"
                       required
                       value={paymentForm.date}
+                      disabled={processingPayment || paymentRetryRequired}
                       onChange={(event) => setPaymentForm({ ...paymentForm, date: event.target.value })}
                     />
                   </div>
@@ -658,6 +682,7 @@ export default function SupplierProfilePage() {
                       id="supplier-payment-reference"
                       maxLength={120}
                       value={paymentForm.reference}
+                      disabled={processingPayment || paymentRetryRequired}
                       onChange={(event) => setPaymentForm({ ...paymentForm, reference: event.target.value })}
                     />
                   </div>
@@ -667,13 +692,14 @@ export default function SupplierProfilePage() {
                       id="supplier-payment-note"
                       maxLength={1000}
                       value={paymentForm.note}
+                      disabled={processingPayment || paymentRetryRequired}
                       onChange={(event) => setPaymentForm({ ...paymentForm, note: event.target.value })}
                     />
                   </div>
                 </form>
               )}
               <DialogFooter>
-                <Button variant="outline" onClick={() => setPaymentOpen(false)} disabled={processingPayment}>
+                <Button variant="outline" onClick={cancelDuePayment} disabled={processingPayment}>
                   {t('suppliers.profile.cancel')}
                 </Button>
                 <Button type="submit" form="supplier-due-payment-form" disabled={processingPayment}>

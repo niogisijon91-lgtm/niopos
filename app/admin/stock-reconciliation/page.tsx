@@ -52,6 +52,7 @@ import { useTranslation } from '@/hooks/use-translation';
 import { toast } from 'sonner';
 import type { Product, StockReconciliation } from '@/types';
 import { useConfirmation } from '@/hooks/use-confirmation';
+import { getSoftwareStockQuantity } from '@/lib/stock-display';
 import AdjustmentManager from './adjustment-manager';
 
 type ReconciliationStatus = 'NOT_CHECKED' | 'CHECKED' | 'DIFFERENCE_FOUND';
@@ -591,7 +592,7 @@ export default function StockReconciliationPage() {
         p.name,
         p.product_code || '',
         p.barcode || '',
-        String(p.stock),
+        String(getSoftwareStockQuantity(p.stock)),
         recon?.physical_quantity != null ? String(recon.physical_quantity) : '',
         recon ? String(recon.difference) : '',
         t(`reconciliation.${status === 'NOT_CHECKED' ? 'notCheckedStatus' : status === 'CHECKED' ? 'checkedStatus' : 'differenceFoundStatus'}`),
@@ -626,7 +627,7 @@ export default function StockReconciliationPage() {
           <td>${escapeHtml(p.name)}</td>
           <td>${escapeHtml(p.product_code)}</td>
           <td>${escapeHtml(p.barcode)}</td>
-          <td>${escapeHtml(p.stock)}</td>
+          <td>${escapeHtml(getSoftwareStockQuantity(p.stock))}</td>
           <td>${escapeHtml(recon?.physical_quantity)}</td>
           <td>${escapeHtml(recon?.difference)}</td>
           <td>${escapeHtml(statusText)}</td>

@@ -2,7 +2,7 @@
 BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
-SELECT plan(14);
+SELECT plan(15);
 
 CREATE TEMP TABLE supplier_due_payment_test_fixtures (
   owner_id uuid NOT NULL,
@@ -177,6 +177,35 @@ SELECT is(
    WHERE supplier.id = fixture.supplier_id),
   60::numeric,
   'previous due payment decreases supplier total due'
+)
+FROM supplier_due_payment_test_fixtures AS fixture;
+
+SELECT is(
+  (SELECT supplier.total_due
+   FROM public.suppliers AS supplier
+   WHERE supplier.id = fixture.supplier_id),
+  (
+    SELECT COALESCE((
+        SELECT SUM(purchase.due_amount)
+        FROM public.purchases AS purchase
+        WHERE purchase.supplier_id = supplier.id
+          AND purchase.store_id = fixture.store_id
+          AND purchase.status <> 'cancelled'
+      ), 0)
+      + GREATEST(
+          COALESCE(supplier.previous_due, 0) - COALESCE((
+            SELECT SUM(payment.amount)
+            FROM public.supplier_payments AS payment
+            WHERE payment.supplier_id = supplier.id
+              AND payment.store_id = fixture.store_id
+              AND payment.applied_to_previous_due
+          ), 0),
+          0
+        )
+    FROM public.suppliers AS supplier
+    WHERE supplier.id = fixture.supplier_id
+  ),
+  'cached supplier due matches remaining invoices and previous due'
 )
 FROM supplier_due_payment_test_fixtures AS fixture;
 

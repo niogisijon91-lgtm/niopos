@@ -615,7 +615,9 @@ export default function DashboardPage() {
           <Card className="p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold font-heading">{t('dashboard.recentSales')}</h3>
-              <Button variant="ghost" size="sm" className="text-primary">{t('dashboard.viewAll')}</Button>
+              <Button asChild variant="ghost" size="sm" className="text-primary">
+                <Link href="/admin/sales">{t('dashboard.viewAll')}</Link>
+              </Button>
             </div>
             <div className="space-y-3">
               {recentSales.length > 0 ? recentSales.map((sale) => (

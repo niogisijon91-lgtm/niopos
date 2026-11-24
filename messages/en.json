@@ -292,6 +292,7 @@
     "selectCsv": "Please select a CSV file",
     "fileTooLarge": "File too large (maximum 10 MB)",
     "readFailed": "Could not read the file",
+    "malformedFile": "The CSV file contains invalid quotation marks or quoting",
     "invalidEncoding": "This file's text encoding is invalid or unsupported. Save the spreadsheet as UTF-8 CSV and try again.",
     "emptyFile": "The CSV file appears to be empty",
     "templateDownloaded": "Template downloaded",

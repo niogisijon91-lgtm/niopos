@@ -24,7 +24,7 @@ import type { Category, Brand, Unit, Product } from '@/types';
 import { useTranslation } from '@/hooks/use-translation';
 import { useConfirmation } from '@/hooks/use-confirmation';
 import {
-  decodeCSVBuffer, CsvEncodingError, parseCSV, autoMapColumns, applyMapping, validateRows,
+  decodeCSVBuffer, CsvEncodingError, CsvParseError, parseCSV, autoMapColumns, applyMapping, validateRows,
   generateTemplateCSV, generateErrorReportCSV, downloadFile,
   buildRefMaps, rowToProductData,
   FIELD_DEFINITIONS, type ColumnMapping, type ParsedRow,
@@ -138,6 +138,8 @@ export function ImportCSVDialog({
     } catch (error) {
       if (error instanceof CsvEncodingError) {
         toast.error(t('csvImport.invalidEncoding'));
+      } else if (error instanceof CsvParseError) {
+        toast.error(t('csvImport.malformedFile'));
       } else {
         console.error('[Product import] Could not read CSV:', error);
         toast.error(t('csvImport.readFailed'));

@@ -11,15 +11,17 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { useTranslation } from '@/hooks/use-translation';
-import type { IScannerControls } from '@zxing/browser';
+import {
+  createPOSCameraSession,
+  getCameraPrerequisiteError,
+  type CameraDirection,
+} from '@/lib/pos-camera-session';
 
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDetected: (barcode: string) => void;
 };
-
-type CameraDirection = 'environment' | 'user';
 
 export function POSCameraScanner({ open, onOpenChange, onDetected }: Props) {
   const { t } = useTranslation();
@@ -38,20 +40,24 @@ export function POSCameraScanner({ open, onOpenChange, onDetected }: Props) {
     if (!open) return;
 
     let cancelled = false;
-    let controls: IScannerControls | undefined;
+    let session: ReturnType<typeof createPOSCameraSession> | undefined;
     const video = videoRef.current;
     scannedRef.current = false;
     setCameraError('');
     setStarting(true);
 
     const startCamera = async () => {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setCameraError(t('pos.cameraUnavailable'));
+      const prerequisiteError = getCameraPrerequisiteError(
+        window.isSecureContext,
+        Boolean(navigator.mediaDevices?.getUserMedia)
+      );
+      if (prerequisiteError === 'secure-context') {
+        setCameraError(t('pos.cameraRequiresSecureContext'));
         setStarting(false);
         return;
       }
-      if (!window.isSecureContext) {
-        setCameraError(t('pos.cameraRequiresSecureContext'));
+      if (prerequisiteError === 'unavailable') {
+        setCameraError(t('pos.cameraUnavailable'));
         setStarting(false);
         return;
       }
@@ -61,30 +67,19 @@ export function POSCameraScanner({ open, onOpenChange, onDetected }: Props) {
         if (!video || cancelled) return;
 
         const reader = new BrowserMultiFormatReader(undefined, { delayBetweenScanAttempts: 250 });
-        const nextControls = await reader.decodeFromConstraints(
-          {
-            audio: false,
-            video: {
-              facingMode: { ideal: cameraDirection },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-            },
-          },
+        session = createPOSCameraSession(
+          (constraints, targetVideo, callback) =>
+            reader.decodeFromConstraints(constraints, targetVideo, (result) => callback(result)),
           video,
-          (result) => {
-            if (!result || scannedRef.current) return;
-            const barcode = result.getText().trim();
-            if (!barcode) return;
+          cameraDirection,
+          (barcode) => {
+            if (scannedRef.current) return;
             scannedRef.current = true;
             onDetectedRef.current(barcode);
           }
         );
-
-        if (cancelled) {
-          nextControls.stop();
-          return;
-        }
-        controls = nextControls;
+        if (cancelled) session.stop();
+        await session.started;
       } catch (error) {
         if (cancelled) return;
         console.error('[POS camera scanner] Could not start camera:', error);
@@ -104,7 +99,7 @@ export function POSCameraScanner({ open, onOpenChange, onDetected }: Props) {
     void startCamera();
     return () => {
       cancelled = true;
-      controls?.stop();
+      session?.stop();
       if (video) video.srcObject = null;
     };
   }, [cameraDirection, open, t]);
